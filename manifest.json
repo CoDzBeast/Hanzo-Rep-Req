@@ -18,6 +18,14 @@
     "https://www.hattorihanzoshears.com/*"
   ],
 
+  "content_scripts": [
+    {
+      "matches": ["https://www.hattorihanzoshears.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+
   "background": {
     /* Classic service worker (not module) so we can importScripts(pdf-lib) */
     "service_worker": "background.js"
