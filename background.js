@@ -1,17 +1,8 @@
 /* background.js */
 /* global PDFLib */
 
-// Consistent logger for background scope. Defined before imports so we can log
-// issues during importScripts.
-const HH = (() => {
-  const tag = '[HH][BG]';
-  const ts = () => new Date().toISOString();
-  return {
-    log:  (...a) => console.log(ts(), tag, ...a),
-    warn: (...a) => console.warn(ts(), tag, ...a),
-    err:  (...a) => console.error(ts(), tag, ...a),
-  };
-})();
+importScripts('logger.js');
+const log = Logger.make('BG');
 
 // Debug wrapper for runtime messaging to trace send/receive and timeouts.
 // Each context (background, content, popup) calls this to patch the default
@@ -27,20 +18,20 @@ function setupMessageDebug(){
       callback = options;
       opts = undefined;
     }
-    HH.log('sendMessage ->', msg);
+    log.debug('sendMessage ->', { msg });
     const timer = setTimeout(() => {
-      HH.warn('sendMessage timeout', msg);
+      log.warn('sendMessage timeout', { msg });
     }, 5000);
     const wrappedCb = (...args) => {
       clearTimeout(timer);
-      HH.log('sendMessage <- reply', msg, args);
+      log.debug('sendMessage <- reply', { msg, args });
       if (callback) callback(...args);
     };
     try {
       return opts !== undefined ? origSend(msg, opts, wrappedCb) : origSend(msg, wrappedCb);
     } catch (e) {
       clearTimeout(timer);
-      HH.err('sendMessage exception', String(e), msg);
+      log.error('sendMessage exception', { error: String(e), msg });
       throw e;
     }
   };
@@ -49,24 +40,24 @@ function setupMessageDebug(){
   const origAdd = chrome.runtime.onMessage.addListener;
   chrome.runtime.onMessage.addListener = (fn) => {
     const wrapped = (msg, sender, sendResponse) => {
-      HH.log('onMessage <-', msg, { sender });
+      log.debug('onMessage <-', { msg, sender });
       let responded = false;
       const timer = setTimeout(() => {
-        if (!responded) HH.warn('onMessage handler timeout', msg);
+        if (!responded) log.warn('onMessage handler timeout', { msg });
       }, 5000);
       const wrappedSend = (...args) => {
         responded = true;
         clearTimeout(timer);
-        HH.log('onMessage -> reply', msg, args);
+        log.debug('onMessage -> reply', { msg, args });
         try { sendResponse(...args); }
-        catch (e) { HH.err('sendResponse error', String(e)); }
+        catch (e) { log.error('sendResponse error', { error: String(e) }); }
       };
       let result = false;
       try {
         result = fn(msg, sender, wrappedSend);
       } catch (e) {
         clearTimeout(timer);
-        HH.err('onMessage handler exception', String(e));
+        log.error('onMessage handler exception', { error: String(e) });
         throw e;
       }
       if (result !== true) {
@@ -87,7 +78,7 @@ setupMessageDebug();
 try {
   importScripts('pdf-lib.min.js');
 } catch (e) {
-  HH.err('importScripts pdf-lib.min.js failed', String(e));
+  log.error('importScripts pdf-lib.min.js failed', String(e));
 }
 
 const ORIGIN = 'https://www.hattorihanzoshears.com';
@@ -102,7 +93,7 @@ const HEARTBEAT_MIN = 0.25; // 15s
 
 // Sanity check: pdf-lib availability
 if (!self.PDFLib || !PDFLib.PDFDocument) {
-  HH.err('pdf-lib not loaded. Ensure pdf-lib.min.js is present and importScripts succeeded.');
+  log.error('pdf-lib not loaded. Ensure pdf-lib.min.js is present and importScripts succeeded.');
 }
 
 // ---------- Storage helpers with debug ----------
@@ -111,7 +102,7 @@ async function get(key, def){
     const obj = await chrome.storage.local.get(key);
     return (key in obj) ? obj[key] : def;
   } catch (e) {
-    HH.err('storage.get failed', key, String(e));
+    log.error('storage.get failed', { key, error: String(e) });
     return def;
   }
 }
@@ -119,29 +110,29 @@ async function set(key, val){
   try {
     await chrome.storage.local.set({ [key]: val });
   } catch (e) {
-    HH.err('storage.set failed', key, String(e), { val });
+    log.error('storage.set failed', { key, error: String(e), val });
   }
 }
 
 // ---------- Job enqueue / labels ----------
 async function enqueueJob(job){
-  HH.log('enqueueJob', job);
+  log.info('enqueueJob', job);
   const jobs = await get(JOBS_KEY, []);
   jobs.push({ ...job, status: 'pending', tries: 0, nextAt: 0 });
   await set(JOBS_KEY, jobs);
   // Kick the processor without awaiting so we can respond to the sender
   // immediately. Any errors are logged.
-  runProcessor().catch(e => HH.err('runProcessor enqueue error', String(e)));
+  runProcessor().catch(e => log.error('runProcessor enqueue error', String(e)));
 }
 
 async function pushLabel(item){
-  HH.log('pushLabel', item);
+  log.info('pushLabel', item);
   const labels = await get(LABELS_KEY, []);
   if (!labels.find(x => x.iorder === item.iorder)) {
     labels.push(item);
     await set(LABELS_KEY, labels);
   } else {
-    HH.warn('label duplicate ignored (iorder de-dupe)', item.iorder);
+    log.warn('label duplicate ignored (iorder de-dupe)', item.iorder);
   }
 }
 
@@ -151,17 +142,17 @@ async function withLock(fn){
   const curr = await get(LOCK_KEY, { locked:false, ts:0 });
   // 15s stale window: prevents stuck locks from blocking forever
   if (curr.locked && (now - curr.ts) < 15000) {
-    HH.log('withLock: already locked, skipping this cycle');
+    log.info('withLock: already locked, skipping this cycle');
     return;
   }
-  HH.log('withLock: acquiring'); // Trace lock attempts
+  log.info('withLock: acquiring'); // Trace lock attempts
   await set(LOCK_KEY, { locked:true, ts:now });
-  HH.log('withLock: acquired'); // Confirm acquisition
+  log.info('withLock: acquired'); // Confirm acquisition
   try { await fn(); }
-  catch (e) { HH.err('withLock fn error', String(e)); }
+  catch (e) { log.error('withLock fn error', String(e)); }
   finally {
     await set(LOCK_KEY, { locked:false, ts:Date.now() });
-    HH.log('withLock: released'); // Trace lock release
+    log.info('withLock: released'); // Trace lock release
   }
 }
 
@@ -174,7 +165,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     enqueueJob(msg.job)
       .then(() => sendResponse({ ok: true }))
       .catch(e => {
-        HH.err('enqueueJob error', String(e), msg.job);
+        log.error('enqueueJob error', String(e), msg.job);
         sendResponse({ ok: false, error: String(e) });
       });
     return true;
@@ -183,7 +174,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     printAllMerged()
       .then(() => sendResponse({ ok: true }))
       .catch(e => {
-        HH.err('printAllMerged error', String(e));
+        log.error('printAllMerged error', String(e));
         sendResponse({ ok: false, error: String(e) });
       });
     return true;
@@ -191,19 +182,19 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 });
 
 chrome.runtime.onStartup.addListener(() => {
-  HH.log('onStartup: kicking processor');
-  runProcessor().catch(e => HH.err('runProcessor onStartup error', String(e)));
+  log.info('onStartup: kicking processor');
+  runProcessor().catch(e => log.error('runProcessor onStartup error', String(e)));
 });
 chrome.runtime.onInstalled.addListener(() => {
-  HH.log('onInstalled: kicking processor');
-  runProcessor().catch(e => HH.err('runProcessor onInstalled error', String(e)));
+  log.info('onInstalled: kicking processor');
+  runProcessor().catch(e => log.error('runProcessor onInstalled error', String(e)));
 });
 
 chrome.alarms.create('hh_job_heartbeat', { periodInMinutes: HEARTBEAT_MIN });
 chrome.alarms.onAlarm.addListener(a => {
   if (a.name === 'hh_job_heartbeat') {
-    HH.log('heartbeat: kicking processor');
-    runProcessor().catch(e => HH.err('runProcessor heartbeat error', String(e)));
+    log.info('heartbeat: kicking processor');
+    runProcessor().catch(e => log.error('runProcessor heartbeat error', String(e)));
   }
 });
 
@@ -213,14 +204,14 @@ chrome.alarms.onAlarm.addListener(a => {
 async function runProcessor(){
   await withLock(async () => {
     while (true) {
-      HH.log('runProcessor: checking queue'); // Trace each loop iteration
+      log.info('runProcessor: checking queue'); // Trace each loop iteration
       let jobs = await get(JOBS_KEY, []);
       const now = Date.now();
 
       // choose next eligible job
       const idx = jobs.findIndex(j => (j.status === 'pending' || j.status === 'retry') && (j.nextAt || 0) <= now);
       if (idx === -1) {
-        HH.log('runProcessor: no eligible jobs');
+        log.info('runProcessor: no eligible jobs');
         break;
       }
 
@@ -228,7 +219,7 @@ async function runProcessor(){
       jobs[idx].status = 'processing';
       await set(JOBS_KEY, jobs);
 
-      HH.log('Processing job', job);
+      log.info('Processing job', job);
 
       try {
         await processJob(job);
@@ -237,7 +228,7 @@ async function runProcessor(){
         jobs = await get(JOBS_KEY, []);
         const pos = jobs.findIndex(j => j.jobId === job.jobId);
         if (pos > -1) { jobs.splice(pos, 1); await set(JOBS_KEY, jobs); }
-        HH.log('Job completed', job.jobId);
+        log.info('Job completed', job.jobId);
 
         // notify (optional)
         try {
@@ -249,7 +240,7 @@ async function runProcessor(){
         } catch {}
       } catch (err) {
         const reason = (err && err.message) ? err.message : String(err);
-        HH.warn('Job failed', { jobId: job.jobId, reason });
+        log.warn('Job failed', { jobId: job.jobId, reason });
 
         // schedule retry or mark failed
         jobs = await get(JOBS_KEY, []);
@@ -259,13 +250,13 @@ async function runProcessor(){
           if (tries >= MAX_TRIES) {
             jobs[pos].status = 'failed';
             jobs[pos].tries = tries;
-            HH.err('Job permanently failed', { jobId: job.jobId, tries, reason });
+            log.error('Job permanently failed', { jobId: job.jobId, tries, reason });
           } else {
             const backoff = Math.min(30000, 1000 * Math.pow(2, tries)); // 2s,4s,8s...
             jobs[pos].status = 'retry';
             jobs[pos].tries = tries;
             jobs[pos].nextAt = Date.now() + backoff;
-            HH.warn('Job scheduled for retry', { jobId: job.jobId, tries, backoffMs: backoff, reason });
+            log.warn('Job scheduled for retry', { jobId: job.jobId, tries, backoffMs: backoff, reason });
           }
           await set(JOBS_KEY, jobs);
         }
@@ -276,7 +267,7 @@ async function runProcessor(){
         (j.status === 'pending') || (j.status === 'retry' && (j.nextAt || 0) <= Date.now())
       );
       if (!more) {
-        HH.log('Processor idle');
+        log.info('Processor idle');
         break;
       }
       // Loop continues to process next job
@@ -294,7 +285,7 @@ async function processJob(job){
 
   // 1) Open account page in background
   const { id: tabId } = await chrome.tabs.create({ url: accountUrl, active: false });
-  HH.log('Account tab opened', { tabId, accountUrl });
+  log.info('Account tab opened', { tabId, accountUrl });
   await waitComplete(tabId);
 
   // 2) Find bottom "O" row and extract iorder
@@ -323,7 +314,7 @@ async function processJob(job){
     try { await chrome.tabs.remove(tabId); } catch {}
     throw new Error('No iorder found (O-row not present or structure changed)');
   }
-  HH.log('Found iorder', { iorder, fromOrder: job.visibleOrder || null });
+  log.info('Found iorder', { iorder, fromOrder: job.visibleOrder || null });
 
   // 3) Try to generate/capture PDF URL (handles backend lag)
   const pdfUrl = await tryViewDemoLabelWithRetries(tabId, iorder, 5, 2000);
@@ -331,13 +322,13 @@ async function processJob(job){
     try { await chrome.tabs.remove(tabId); } catch {}
     throw new Error('No PDF URL captured (viewDemoLabel may have changed)');
   }
-  HH.log('Captured PDF URL', { iorder, pdfUrl });
+  log.info('Captured PDF URL', { iorder, pdfUrl });
 
   // 4) Save to labels queue
   await pushLabel({ iorder, fromOrder: job.visibleOrder || null, url: pdfUrl });
 
   try { await chrome.tabs.remove(tabId); } catch {}
-  HH.log('Closed account tab', { tabId });
+  log.info('Closed account tab', { tabId });
 }
 
 function waitComplete(tabId){
@@ -345,7 +336,7 @@ function waitComplete(tabId){
     function onUpd(id, info){
       if (id === tabId && info.status === 'complete'){
         chrome.tabs.onUpdated.removeListener(onUpd);
-        HH.log('Tab complete', { tabId });
+        log.info('Tab complete', { tabId });
         resolve();
       }
     }
@@ -371,7 +362,7 @@ async function tryViewDemoLabelWithRetries(tabId, iorder, maxTries, delayMs){
   });
 
   for (let t=1; t<=maxTries; t++){
-    HH.log('viewDemoLabel attempt', { attempt: t, iorder });
+    log.info('viewDemoLabel attempt', { attempt: t, iorder });
 
     // Try param signature first, fallback to context call
     await chrome.scripting.executeScript({
@@ -398,22 +389,22 @@ async function tryViewDemoLabelWithRetries(tabId, iorder, maxTries, delayMs){
 
     const url = await waitPdfUrl(tabId, 1500);
     if (url) {
-      HH.log('viewDemoLabel success', { attempt: t, url });
+      log.info('viewDemoLabel success', { attempt: t, url });
       return url;
     }
 
-    HH.warn('viewDemoLabel: no PDF yet, delaying', { attempt: t, delayMs });
+    log.warn('viewDemoLabel: no PDF yet, delaying', { attempt: t, delayMs });
     await new Promise(r => setTimeout(r, delayMs));
   }
-  HH.err('viewDemoLabel exhausted retries', { iorder, maxTries });
+  log.error('viewDemoLabel exhausted retries', { iorder, maxTries });
   return null;
 }
 
 function waitPdfUrl(tabId, timeoutMs){
-  HH.log('waitPdfUrl: start', { tabId, timeoutMs }); // Trace entry
+  log.info('waitPdfUrl: start', { tabId, timeoutMs }); // Trace entry
   return new Promise(resolve => {
     let timer = setTimeout(() => {
-      HH.warn('waitPdfUrl: timeout', { tabId, timeoutMs }); // Debug timeout path
+      log.warn('waitPdfUrl: timeout', { tabId, timeoutMs }); // Debug timeout path
       cleanup();
       resolve(null);
     }, timeoutMs);
@@ -422,7 +413,7 @@ function waitPdfUrl(tabId, timeoutMs){
       if (id !== tabId) return;
       if (info.url && /\.pdf(\?|$)/i.test(info.url)) {
         cleanup();
-        HH.log('PDF via tab URL change', { tabId, url: info.url });
+        log.info('PDF via tab URL change', { tabId, url: info.url });
         resolve(info.url);
       }
     }
@@ -435,12 +426,12 @@ function waitPdfUrl(tabId, timeoutMs){
         });
         if (result && /\.pdf(\?|$)/i.test(result)) {
           cleanup();
-          HH.log('PDF via window.open capture', { tabId, url: result });
+          log.info('PDF via window.open capture', { tabId, url: result });
           resolve(result);
           return;
         }
       } catch (e) {
-        HH.warn('pollVar executeScript error', String(e));
+        log.warn('pollVar executeScript error', String(e));
       }
       if (timer) setTimeout(pollVar, 250);
     }
@@ -458,10 +449,10 @@ function waitPdfUrl(tabId, timeoutMs){
 
 // ---------- Print All: fetch, merge, print once ----------
 async function printAllMerged(){
-  HH.log('printAll: starting');
+  log.info('printAll: starting');
   const queue = await get(LABELS_KEY, []);
   if (!queue.length) {
-    HH.warn('printAll: no labels queued');
+    log.warn('printAll: no labels queued');
     return;
   }
 
@@ -481,13 +472,13 @@ async function printAllMerged(){
     }
   }
   if (!pdfBuffers.length) {
-    HH.err('printAll: no PDFs fetched; aborting', { failures });
+    log.error('printAll: no PDFs fetched; aborting', { failures });
     return;
   }
-  if (failures.length) HH.warn('printAll: some PDFs failed to fetch', failures);
+  if (failures.length) log.warn('printAll: some PDFs failed to fetch', failures);
 
   if (!PDFLib || !PDFLib.PDFDocument) {
-    HH.err('printAll: PDFLib not available; cannot merge');
+    log.error('printAll: PDFLib not available; cannot merge');
     return;
   }
 
@@ -503,7 +494,7 @@ async function printAllMerged(){
     const blobUrl = URL.createObjectURL(new Blob([out], { type: 'application/pdf' }));
 
     const { id: tabId } = await chrome.tabs.create({ url: 'about:blank', active: false });
-    HH.log('printAll: temp tab created', { tabId });
+    log.info('printAll: temp tab created', { tabId });
 
     await chrome.scripting.executeScript({
       target: { tabId }, world: 'MAIN',
@@ -533,11 +524,11 @@ async function printAllMerged(){
 
     // optional: clear queue & close the temp tab after printing
     setTimeout(async () => {
-      HH.log('printAll: clearing queue and closing print tab', { tabId });
+      log.info('printAll: clearing queue and closing print tab', { tabId });
       await set(LABELS_KEY, []);
       try { await chrome.tabs.remove(tabId); } catch {}
     }, 4000);
   } catch (e) {
-    HH.err('printAll merge/print error', String(e));
+    log.error('printAll merge/print error', String(e));
   }
 }

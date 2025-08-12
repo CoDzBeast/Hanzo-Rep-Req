@@ -2,16 +2,7 @@
 // Purpose: Listen ONLY for "Ship It!" clicks inside the shipping modal,
 // extract account URL and visible order, and enqueue a background job.
 
-// Lightweight, consistent logger for content scope
-const HH = (() => {
-  const tag = '[HH][Content]';
-  const ts = () => new Date().toISOString();
-  return {
-    log:  (...a) => console.log(ts(), tag, ...a),
-    warn: (...a) => console.warn(ts(), tag, ...a),
-    err:  (...a) => console.error(ts(), tag, ...a),
-  };
-})();
+const log = Logger.make('Content');
 
 // ----- Configurable selectors / keywords -----
 // Single location to tweak DOM hooks or text matching for demo returns.
@@ -27,21 +18,6 @@ const SELECTORS = {
   emailLabelBtn: '[onclick*="sendReturnLabel"], a[href*="sendReturnLabel"]', // fallback action
 };
 
-// Generic step logger for timestamped start/finish of async steps
-const DBG = {
-  async step(name, fn){
-    const start = Date.now();
-    HH.log(`STEP:${name}:start`, { t: start });
-    try {
-      const res = await fn();
-      HH.log(`STEP:${name}:finish`, { dt: Date.now() - start });
-      return res;
-    } catch (e) {
-      HH.err(`STEP:${name}:error`, String(e));
-      throw e;
-    }
-  }
-};
 
 // Patch runtime messaging for detailed logging and timeout detection. This
 // mirrors the helper used in background.js so we can trace every message in
@@ -56,18 +32,18 @@ function setupMessageDebug(){
       callback = options;
       opts = undefined;
     }
-    HH.log('sendMessage ->', msg);
-    const timer = setTimeout(() => HH.warn('sendMessage timeout', msg), 5000);
+    log.debug('sendMessage ->', { msg });
+    const timer = setTimeout(() => log.warn('sendMessage timeout', { msg }), 5000);
     const wrappedCb = (...args) => {
       clearTimeout(timer);
-      HH.log('sendMessage <- reply', msg, args);
+      log.debug('sendMessage <- reply', { msg, args });
       if (callback) callback(...args);
     };
     try {
       return opts !== undefined ? origSend(msg, opts, wrappedCb) : origSend(msg, wrappedCb);
     } catch (e) {
       clearTimeout(timer);
-      HH.err('sendMessage exception', String(e), msg);
+      log.error('sendMessage exception', { error: String(e), msg });
       throw e;
     }
   };
@@ -76,24 +52,24 @@ function setupMessageDebug(){
   const origAdd = chrome.runtime.onMessage.addListener;
   chrome.runtime.onMessage.addListener = (fn) => {
     const wrapped = (msg, sender, sendResponse) => {
-      HH.log('onMessage <-', msg, { sender });
+      log.debug('onMessage <-', { msg, sender });
       let responded = false;
       const timer = setTimeout(() => {
-        if (!responded) HH.warn('onMessage handler timeout', msg);
+        if (!responded) log.warn('onMessage handler timeout', { msg });
       }, 5000);
       const wrappedSend = (...args) => {
         responded = true;
         clearTimeout(timer);
-        HH.log('onMessage -> reply', msg, args);
+        log.debug('onMessage -> reply', { msg, args });
         try { sendResponse(...args); }
-        catch (e) { HH.err('sendResponse error', String(e)); }
+        catch (e) { log.error('sendResponse error', { error: String(e) }); }
       };
       let result = false;
       try {
         result = fn(msg, sender, wrappedSend);
       } catch (e) {
         clearTimeout(timer);
-        HH.err('onMessage handler exception', String(e));
+        log.error('onMessage handler exception', { error: String(e) });
         throw e;
       }
       if (result !== true) {
@@ -108,18 +84,18 @@ function setupMessageDebug(){
   // Wrap runtime.connect to trace long-lived ports and avoid premature closure
   const origConnect = chrome.runtime.connect.bind(chrome.runtime);
   chrome.runtime.connect = (...args) => {
-    HH.log('connect ->', args);
+    log.debug('connect ->', { args });
     const port = origConnect(...args);
     const name = (args[0] && args[0].name) || '';
-    port.onMessage.addListener((msg) => HH.log(`port ${name} <-`, msg));
+    port.onMessage.addListener((msg) => log.debug(`port ${name} <-`, { msg }));
     const origPost = port.postMessage.bind(port);
     port.postMessage = (msg) => {
-      HH.log(`port ${name} ->`, msg);
+      log.debug(`port ${name} ->`, { msg });
       origPost(msg);
     };
     const origDisc = port.disconnect.bind(port);
     port.disconnect = () => {
-      HH.log(`port ${name} disconnect`);
+      log.debug(`port ${name} disconnect`);
       origDisc();
     };
     return port;
@@ -132,11 +108,11 @@ setupMessageDebug();
 (function () {
   // Defensive: make sure we only attach once (pages with partial reloads/modals)
   if (window.__HH_CONTENT_ATTACHED__) {
-    HH.log('listener already attached; skipping re-attach');
+    log.info('listener already attached; skipping re-attach');
     return;
   }
   window.__HH_CONTENT_ATTACHED__ = true;
-  HH.log('attaching Ship It! listener');
+  log.info('attaching Ship It! listener');
 
   document.addEventListener('click', (e) => {
     const shipBtn = e.target.closest('#SI'); // "Ship It!" button inside the modal
@@ -146,7 +122,7 @@ setupMessageDebug();
     const modal = shipBtn.closest('.modal-content');
     if (!modal) {
       // Added debug: helps if DOM structure changes
-      HH.err('Ship It! clicked but .modal-content not found');
+      log.error('Ship It! clicked but .modal-content not found');
       return;
     }
 
@@ -156,11 +132,11 @@ setupMessageDebug();
     const visibleOrder = (modal.querySelector('#iOrd1')?.textContent || '').trim() || null;
 
     // Log values early to trace DOM extraction issues.
-    HH.log('Ship It! captured', { accountUrl, visibleOrder });
+    log.debug('Ship It! captured', { accountUrl, visibleOrder });
 
     if (!accountUrl) {
       // Clear message why job not enqueued
-      HH.err('Account URL (#Cust0) missing; job NOT enqueued', { visibleOrder });
+      log.error('Account URL (#Cust0) missing; job NOT enqueued', { visibleOrder });
       return;
     }
 
@@ -178,13 +154,13 @@ setupMessageDebug();
         // Runtime errors (e.g., service worker asleep) surface here
         const err = chrome.runtime.lastError;
         if (err) {
-          HH.err('Failed to send ENQUEUE_SHIP_JOB', err.message, job);
+          log.error('Failed to send ENQUEUE_SHIP_JOB', err.message, job);
         } else {
-          HH.log('ENQUEUE_SHIP_JOB sent', job);
+          log.debug('ENQUEUE_SHIP_JOB sent', { job });
         }
       });
     } catch (ex) {
-      HH.err('Exception while sending ENQUEUE_SHIP_JOB', String(ex), job);
+      log.error('Exception while sending ENQUEUE_SHIP_JOB', String(ex), job);
     }
   }, { capture: true });
 
@@ -196,83 +172,119 @@ setupMessageDebug();
 // Demo return automation: auto-click demo order and fetch return label
 // ---------------------------------------------------------------------------
 (function(){
-  HH.log('demo automation ready');
+  log.info('demo automation ready');
 
-  const state = {
-    orderClicked: false,
-    labelClicked: false,
-  };
+  const state = { orderClicked: false, labelClicked: false, searching: false };
+  const cooldowns = new Map();
 
   // Re-run logic when DOM mutates (table or modal replaced)
   const bodyObserver = new MutationObserver(() => {
-    try { process(); } catch (e) { HH.err('process error', String(e)); }
+    try { process(); } catch (e) { log.error('process error', String(e)); }
   });
   bodyObserver.observe(document.documentElement, { childList: true, subtree: true });
 
-  // Main process orchestrator
   async function process(){
-    if (state.orderClicked) return; // already acted
-
-    // Wait for at least one order panel to exist. Older pages used a table,
-    // so we fall back to that selector if the new container isn't present.
-    const root = await DBG.step('waitOrder', () =>
-      waitForElem(`${SELECTORS.orderPanel}, ${SELECTORS.table}`, 10000)
-    );
-    if (!root) return; // timeout logged by waitForElem
-
-    // Scan all table rows on the page for any cell containing an OUT keyword.
-    const rows = Array.from(document.querySelectorAll('tr'));
-    const targetRow = rows.find(r => {
-      const cells = Array.from(r.querySelectorAll('td'));
-      const texts = cells.map(td => (td.textContent || '').trim().toUpperCase());
-      return texts.some(t => OUT_KEYWORDS.some(k => k.length === 1 ? t === k : t.includes(k)));
-    });
-    if (!targetRow) {
-      HH.warn('no demo/out row found yet');
-      return;
-    }
-
-    // Locate the clickable order header within the same panel
-    const panel = targetRow.closest(SELECTORS.orderPanel);
-    const link = panel?.querySelector(SELECTORS.orderHeader) ||
-                 targetRow.querySelector(SELECTORS.orderHeader) ||
-                 targetRow.querySelector(SELECTORS.orderLink);
-    if (!link) {
-      HH.err('order link not found in target row');
-      return;
-    }
-    const ord = (link.textContent || '').trim();
-    HH.log('clicking order', ord || '(no text)');
+    if (state.orderClicked || state.searching) return;
+    state.searching = true;
+    const rows = await waitForDemoRows();
+    state.searching = false;
+    if (!rows.length) return;
+    const targetRow = rows[0];
+    const orderNo = (targetRow.querySelector('td:nth-child(2)')?.textContent || '').trim();
+    if (!orderNo) return;
+    if (cooldowns.get(orderNo) > Date.now()) return;
+    const link = await ensureOrderLink(targetRow, orderNo);
+    if (!link) { cooldowns.set(orderNo, Date.now() + 10000); return; }
+    log.info('clicking order', { orderNo });
     state.orderClicked = true;
     link.click();
     waitForModal();
   }
 
+  function findDemoOutRows(){
+    const rows = Array.from(document.querySelectorAll('tr'));
+    return rows.filter(r => {
+      const cells = Array.from(r.querySelectorAll('td'));
+      const texts = cells.map(td => (td.textContent || '').trim().toUpperCase());
+      return texts.some(t => OUT_KEYWORDS.some(k => k.length === 1 ? t === k : t.includes(k)));
+    });
+  }
+
+  async function waitForDemoRows(maxMs = 60000){
+    let delay = 300, ttl = maxMs;
+    let started = false;
+    while (ttl > 0){
+      const rows = findDemoOutRows();
+      if (rows.length){
+        if (started) log.info('demo/out rows found', { count: rows.length });
+        return rows;
+      }
+      if (!started){ log.debug('waiting for demo/out rows'); started = true; }
+      log.debug('no demo/out row yet', { delay });
+      await sleep(delay);
+      ttl -= delay;
+      delay = Math.min(delay * 2, 3000);
+    }
+    log.warn('demo/out rows not found after ttl', { maxMs });
+    return [];
+  }
+
+  async function ensureOrderLink(row, orderNo){
+    const selectorsTried = [SELECTORS.orderHeader, SELECTORS.orderLink];
+    let link = row.querySelector(SELECTORS.orderHeader) || row.querySelector(SELECTORS.orderLink);
+    if (link) return link;
+    const counts = {
+      panels: document.querySelectorAll(SELECTORS.orderPanel).length,
+      headers: document.querySelectorAll(SELECTORS.orderHeader).length,
+    };
+    let textScan = false;
+    if (!document.querySelector(SELECTORS.orderPanel)) {
+      refreshOrdersAccordion();
+      await sleep(200);
+      link = row.querySelector(SELECTORS.orderHeader) || row.querySelector(SELECTORS.orderLink);
+      if (link) return link;
+    }
+    if (!link && counts.headers === 0){
+      textScan = true;
+      link = Array.from(document.querySelectorAll('a, span, div')).find(el => (el.textContent || '').trim() === orderNo);
+      if (link) return link;
+    }
+    log.warn('order link not found', { orderNo, selectorsTried, counts, textScan });
+    return null;
+  }
+
+  function refreshOrdersAccordion(){
+    const toggle = Array.from(document.querySelectorAll('a,button')).find(el => /Orders/i.test(el.textContent || ''));
+    if (toggle) toggle.click();
+  }
+
+  function sleep(ms){ return new Promise(res => setTimeout(res, ms)); }
+
   // Wait for modal, then click view/email return label
   async function waitForModal(retry = 0){
-    const modal = await DBG.step('waitModal', () => waitForElem(SELECTORS.modalRoot, 10000));
+    const modal = await log.step('waitModal', () => waitForElem(SELECTORS.modalRoot, 10000));
     if (!modal) {
       if (retry < 5) {
         const delay = 500 * Math.pow(2, retry);
-        HH.warn('modal not found; retrying', { retry, delay });
+        log.warn('modal not found; retrying', { retry, delay });
         setTimeout(() => waitForModal(retry + 1), delay);
       }
       return;
     }
 
-    await DBG.step('modalStabilize', () => waitForStable(modal));
+    await log.step('modalStabilize', () => waitForStable(modal));
 
     if (state.labelClicked) return; // idempotent
     const viewBtn = modal.querySelector(SELECTORS.viewLabelBtn);
     if (viewBtn) {
-      HH.log('clicking View Rtn Label');
+      log.info('clicking View Rtn Label');
       state.labelClicked = true;
       viewBtn.click();
       return;
     }
     const emailBtn = modal.querySelector(SELECTORS.emailLabelBtn);
     if (emailBtn) {
-      HH.log('clicking Email Rtn Label');
+      log.info('clicking Email Rtn Label');
       state.labelClicked = true;
       emailBtn.click();
       return;
@@ -280,13 +292,13 @@ setupMessageDebug();
 
     // Fallback to calling global functions if buttons absent
     if (typeof window.viewReturnLabel === 'function') {
-      HH.log('calling viewReturnLabel()');
+      log.info('calling viewReturnLabel()');
       state.labelClicked = true;
       window.viewReturnLabel();
       return;
     }
     if (typeof window.sendReturnLabel === 'function') {
-      HH.log('calling sendReturnLabel()');
+      log.info('calling sendReturnLabel()');
       state.labelClicked = true;
       window.sendReturnLabel();
       return;
@@ -294,7 +306,7 @@ setupMessageDebug();
 
     if (retry < 5) {
       const delay = 500 * Math.pow(2, retry);
-      HH.warn('label action missing; retrying', { retry, delay });
+      log.warn('label action missing; retrying', { retry, delay });
       setTimeout(() => waitForModal(retry + 1), delay);
     }
   }
@@ -306,10 +318,10 @@ setupMessageDebug();
       (function check(){
         const el = document.querySelector(sel);
         if (el) {
-          HH.log('selector found', sel);
+          log.debug('selector found', { sel });
           resolve(el);
         } else if (Date.now() - start > timeout) {
-          HH.warn('selector timeout', sel);
+          log.warn('selector timeout', { sel });
           resolve(null);
         } else {
           setTimeout(check, 100);
