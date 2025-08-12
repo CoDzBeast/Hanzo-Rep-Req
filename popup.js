@@ -96,11 +96,11 @@ async function load() {
       return;
     }
     const ul = document.createElement('ul');
-    labels.forEach(it => {
-      const li = document.createElement('li');
-      li.textContent = `iOrder ${it.iorder}` + (it.fromOrder ? ` (from #${it.fromOrder})` : '');
-      ul.appendChild(li);
-    });
+      labels.forEach(it => {
+        const li = document.createElement('li');
+        li.textContent = `Demo Order ${it.demoOrder}` + (it.orderNumber ? ` (from #${it.orderNumber})` : '');
+        ul.appendChild(li);
+      });
     listEl.innerHTML = '';
     listEl.appendChild(ul);
   } catch (e) {

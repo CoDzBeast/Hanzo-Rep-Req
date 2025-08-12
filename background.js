@@ -85,7 +85,7 @@ const ORIGIN = 'https://www.hattorihanzoshears.com';
 
 // Storage keys
 const JOBS_KEY   = 'hh_jobs_v1';   // [{jobId, accountUrl, visibleOrder, status, tries, nextAt, createdAt}]
-const LABELS_KEY = 'hh_labels_v1'; // [{iorder, url, fromOrder}]
+const LABELS_KEY = 'hh_labels_v1'; // [{demoOrder, url, orderNumber}]
 const LOCK_KEY   = 'hh_jobs_lock_v1';
 
 const MAX_TRIES = 3;
@@ -128,11 +128,11 @@ async function enqueueJob(job){
 async function pushLabel(item){
   log.info('pushLabel', item);
   const labels = await get(LABELS_KEY, []);
-  if (!labels.find(x => x.iorder === item.iorder)) {
+  if (!labels.find(x => x.demoOrder === item.demoOrder)) {
     labels.push(item);
     await set(LABELS_KEY, labels);
   } else {
-    log.warn('label duplicate ignored (iorder de-dupe)', item.iorder);
+    log.warn('label duplicate ignored (demoOrder de-dupe)', item.demoOrder);
   }
 }
 
@@ -350,44 +350,54 @@ async function processJob(job){
   log.info('Account tab opened', { tabId, accountUrl });
   await waitComplete(tabId);
 
-  // 2) Find bottom "O" row and extract iorder
-  const [{ result: iorder }] = await chrome.scripting.executeScript({
+  // 2) Find order row (matching visibleOrder if provided) and extract demo order
+  const [{ result: demoOrder }] = await chrome.scripting.executeScript({
     target: { tabId }, world: 'MAIN',
-    func: () => {
+    func: (visibleOrder) => {
       function getIOrder(href){
         const m = /[?&]iorder=(\d+)/i.exec(href || '');
         return m ? m[1] : null;
       }
-      // NOTE: scanning all rows is robust; if perf becomes an issue, narrow to the specific table
       const rows = Array.from(document.querySelectorAll('tr'));
-      const cand = rows.find(r => {
-        const tds = r.querySelectorAll('td');
-        if (!tds.length) return false;
-        const first = (tds[0].textContent || '').trim();
-        return first === 'O' && r.querySelector('a[href*="my_inventory.cfm"][href*="iorder="]');
-      });
+      let cand = null;
+      if (visibleOrder) {
+        cand = rows.find(r => {
+          const text = r.textContent || '';
+          return text.includes(`#${visibleOrder}`) && r.querySelector('a[href*="my_inventory.cfm"][href*="iorder="]');
+        });
+      }
+      if (!cand) {
+        // Fallback: bottom "O" row
+        cand = rows.reverse().find(r => {
+          const tds = r.querySelectorAll('td');
+          if (!tds.length) return false;
+          const first = (tds[0].textContent || '').trim();
+          return first === 'O' && r.querySelector('a[href*="my_inventory.cfm"][href*="iorder="]');
+        });
+      }
       if (!cand) return null;
       const a = cand.querySelector('a[href*="my_inventory.cfm"][href*="iorder="]');
       return getIOrder(a?.getAttribute('href'));
-    }
+    },
+    args: [job.visibleOrder || null]
   });
 
-  if (!iorder) {
+  if (!demoOrder) {
     try { await chrome.tabs.remove(tabId); } catch {}
-    throw new Error('No iorder found (O-row not present or structure changed)');
+    throw new Error('No demo order found (O-row not present or structure changed)');
   }
-  log.info('Found iorder', { iorder, fromOrder: job.visibleOrder || null });
+  log.info('Found demo order', { demoOrder, orderNumber: job.visibleOrder || null });
 
   // 3) Try to generate/capture PDF URL with retries/backoff
-  const pdfUrl = await openLabelAndCapturePdf(tabId, iorder);
+  const pdfUrl = await openLabelAndCapturePdf(tabId, demoOrder);
   if (!pdfUrl) {
     try { await chrome.tabs.remove(tabId); } catch {}
     throw new Error('No PDF URL captured (label click produced no PDF)');
   }
-  log.info('Captured PDF URL', { iorder, pdfUrl });
+  log.info('Captured PDF URL', { demoOrder, pdfUrl });
 
   // 4) Save to labels queue
-  await pushLabel({ iorder, fromOrder: job.visibleOrder || null, url: pdfUrl });
+  await pushLabel({ demoOrder, orderNumber: job.visibleOrder || null, url: pdfUrl });
 
   try { await chrome.tabs.remove(tabId); } catch {}
   log.info('Closed account tab', { tabId });
@@ -449,12 +459,12 @@ async function printAllMerged(){
     try {
       const res = await fetch(item.url, { credentials: 'include' });
       if (!res.ok) {
-        failures.push({ iorder: item.iorder, status: res.status });
+        failures.push({ demoOrder: item.demoOrder, status: res.status });
         continue;
       }
       pdfBuffers.push(await res.arrayBuffer());
     } catch (e) {
-      failures.push({ iorder: item.iorder, err: String(e) });
+      failures.push({ demoOrder: item.demoOrder, err: String(e) });
     }
   }
   if (!pdfBuffers.length) {
