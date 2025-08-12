@@ -159,7 +159,6 @@ async function runProcessor(){
         try {
           chrome.notifications.create(undefined, {
             type: 'basic',
-            iconUrl: 'icon48.png',
             title: 'Label queued',
             message: `Order ${job.visibleOrder || ''} added`
           });
