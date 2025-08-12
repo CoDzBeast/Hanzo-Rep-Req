@@ -225,7 +225,7 @@ setupMessageDebug();
     const targetRow = rows.find(r => {
       const cells = Array.from(r.querySelectorAll('td'));
       const texts = cells.map(td => (td.textContent || '').trim().toUpperCase());
-      return texts.some(t => OUT_KEYWORDS.some(k => t.includes(k)));
+      return texts.some(t => OUT_KEYWORDS.some(k => k.length === 1 ? t === k : t.includes(k)));
     });
     if (!targetRow) {
       HH.warn('no demo/out row found yet');
