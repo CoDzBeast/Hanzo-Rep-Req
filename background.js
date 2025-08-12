@@ -136,6 +136,53 @@ async function pushLabel(item){
   }
 }
 
+// ---------- PDF capture helpers ----------
+const expecting = new Map(); // tabId -> {until,iorder,navigation,tabIds:Set,resolve}
+
+function looksLikePdf(url = ''){
+  const u = String(url).toLowerCase();
+  return u.endsWith('.pdf') || u.includes('pdf=') || u.includes('/pdf/') || u.includes('label');
+}
+
+function handlePdfCandidate(tabId, url, origin = ''){
+  const info = expecting.get(tabId);
+  if (info) info.navigation = true;
+  if (!url) return;
+  if (looksLikePdf(url)) {
+    log.info(`PDF captured via: ${origin}`, { tabId, url });
+    resolvePdfForTab(tabId, url);
+  }
+}
+
+chrome.webNavigation.onCreatedNavigationTarget.addListener(({tabId, sourceTabId, url}) => {
+  const info = expecting.get(sourceTabId);
+  if (!info) return;
+  info.navigation = true;
+  expecting.set(tabId, info);
+  info.tabIds.add(tabId);
+  if (looksLikePdf(url)) {
+    log.info('PDF captured via: onCreatedNavigationTarget', { url });
+    resolvePdfForTab(sourceTabId, url);
+  }
+});
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  const info = expecting.get(tabId);
+  if (!info) return;
+  if (changeInfo.url) info.navigation = true;
+  if (changeInfo.url && looksLikePdf(changeInfo.url)) {
+    log.info('PDF captured via: tabs.onUpdated', { url: changeInfo.url });
+    resolvePdfForTab(tabId, changeInfo.url);
+  }
+});
+
+function resolvePdfForTab(tabId, url){
+  const info = expecting.get(tabId);
+  if (!info) return;
+  for (const id of info.tabIds) expecting.delete(id);
+  try { info.resolve({ url, navigation: true }); } catch {}
+}
+
 // ---------- Simple storage-backed lock ----------
 async function withLock(fn){
   const now = Date.now();
@@ -160,7 +207,7 @@ async function withLock(fn){
 // Main message listener. We always send a response to prevent the message
 // channel from closing prematurely. Returning true keeps the service worker
 // alive until the async work completes.
-chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg?.type === 'ENQUEUE_SHIP_JOB') {
     enqueueJob(msg.job)
       .then(() => sendResponse({ ok: true }))
@@ -177,6 +224,21 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         log.error('printAllMerged error', String(e));
         sendResponse({ ok: false, error: String(e) });
       });
+    return true;
+  }
+  if (msg?.type === 'EXPECT_PDF') {
+    const tabId = sender?.tab?.id;
+    if (tabId) {
+      const info = expecting.get(tabId);
+      if (info) info.until = Date.now() + 45000;
+      else expecting.set(tabId, { until: Date.now() + 45000, iorder: msg.iorder, navigation: false, tabIds: new Set([tabId]) });
+    }
+    sendResponse(true);
+    return true;
+  }
+  if (msg?.type === 'PDF_CANDIDATE_URL') {
+    handlePdfCandidate(sender?.tab?.id, msg.url, msg.origin);
+    sendResponse(true);
     return true;
   }
 });
@@ -316,11 +378,11 @@ async function processJob(job){
   }
   log.info('Found iorder', { iorder, fromOrder: job.visibleOrder || null });
 
-  // 3) Try to generate/capture PDF URL (handles backend lag)
-  const pdfUrl = await tryViewDemoLabelWithRetries(tabId, iorder, 5, 2000);
+  // 3) Try to generate/capture PDF URL with retries/backoff
+  const pdfUrl = await openLabelAndCapturePdf(tabId, iorder);
   if (!pdfUrl) {
     try { await chrome.tabs.remove(tabId); } catch {}
-    throw new Error('No PDF URL captured (viewDemoLabel may have changed)');
+    throw new Error('No PDF URL captured (label click produced no PDF)');
   }
   log.info('Captured PDF URL', { iorder, pdfUrl });
 
@@ -344,106 +406,30 @@ function waitComplete(tabId){
   });
 }
 
-async function tryViewDemoLabelWithRetries(tabId, iorder, maxTries, delayMs){
-  // Patch window.open once to capture PDFs
-  await chrome.scripting.executeScript({
-    target: { tabId }, world: 'MAIN',
-    func: () => {
-      if (window.__HH_OPEN_PATCHED__) return;
-      window.__HH_OPEN_PATCHED__ = true;
-      const origOpen = window.open;
-      window.open = function(u, ...r){
-        try {
-          if (u && /\.pdf(\?|$)/i.test(u)) window.__HH_LAST_PDF_URL__ = u;
-        } catch {}
-        return origOpen.apply(this, [u, ...r]);
-      };
-    }
-  });
-
-  for (let t=1; t<=maxTries; t++){
-    log.info('viewDemoLabel attempt', { attempt: t, iorder });
-
-    // Try param signature first, fallback to context call
-    await chrome.scripting.executeScript({
-      target: { tabId }, world: 'MAIN',
-      func: (io) => {
-        try {
-          if (typeof viewDemoLabel === 'function') {
-            if (viewDemoLabel.length >= 1) {
-              // Call with iorder if function declares params
-              viewDemoLabel(io);
-            } else {
-              // Some sites ignore params and use selected context
-              viewDemoLabel();
-            }
-          } else {
-            console.error('[HH][Page] viewDemoLabel is not a function');
-          }
-        } catch (e) {
-          console.error('[HH][Page] viewDemoLabel threw', e);
-        }
-      },
-      args: [iorder]
-    });
-
-    const url = await waitPdfUrl(tabId, 1500);
-    if (url) {
-      log.info('viewDemoLabel success', { attempt: t, url });
-      return url;
-    }
-
-    log.warn('viewDemoLabel: no PDF yet, delaying', { attempt: t, delayMs });
-    await new Promise(r => setTimeout(r, delayMs));
+async function openLabelAndCapturePdf(tabId, iorder){
+  const delays = [1500, 3000, 6000, 10000, 15000];
+  for (const delay of delays){
+    const result = await attemptOnce(tabId, iorder, delay);
+    if (result.url) return result.url;
+    if (result.navigation) return null; // navigation happened but no pdf
   }
-  log.error('viewDemoLabel exhausted retries', { iorder, maxTries });
   return null;
 }
 
-function waitPdfUrl(tabId, timeoutMs){
-  log.info('waitPdfUrl: start', { tabId, timeoutMs }); // Trace entry
-  return new Promise(resolve => {
-    let timer = setTimeout(() => {
-      log.warn('waitPdfUrl: timeout', { tabId, timeoutMs }); // Debug timeout path
+function attemptOnce(tabId, iorder, delay){
+  return new Promise(async resolve => {
+    const info = { until: Date.now() + delay, iorder, navigation: false, tabIds: new Set([tabId]) };
+    info.resolve = (res) => { clearTimeout(timer); cleanup(); resolve(res); };
+    function cleanup(){ for (const id of info.tabIds) expecting.delete(id); }
+    expecting.set(tabId, info);
+    try {
+      await chrome.tabs.sendMessage(tabId, { type: 'OPEN_ORDER_AND_CLICK_LABEL', iorder });
+    } catch (e) {
       cleanup();
-      resolve(null);
-    }, timeoutMs);
-
-    function onUpdated(id, info){
-      if (id !== tabId) return;
-      if (info.url && /\.pdf(\?|$)/i.test(info.url)) {
-        cleanup();
-        log.info('PDF via tab URL change', { tabId, url: info.url });
-        resolve(info.url);
-      }
+      resolve({ url: null, navigation: true });
+      return;
     }
-
-    async function pollVar(){
-      try {
-        const [{ result }] = await chrome.scripting.executeScript({
-          target: { tabId }, world: 'MAIN',
-          func: () => window.__HH_LAST_PDF_URL__ || null
-        });
-        if (result && /\.pdf(\?|$)/i.test(result)) {
-          cleanup();
-          log.info('PDF via window.open capture', { tabId, url: result });
-          resolve(result);
-          return;
-        }
-      } catch (e) {
-        log.warn('pollVar executeScript error', String(e));
-      }
-      if (timer) setTimeout(pollVar, 250);
-    }
-
-    function cleanup(){
-      clearTimeout(timer);
-      timer = null;
-      chrome.tabs.onUpdated.removeListener(onUpdated);
-    }
-
-    chrome.tabs.onUpdated.addListener(onUpdated);
-    pollVar();
+    const timer = setTimeout(() => { cleanup(); resolve({ url: null, navigation: info.navigation }); }, delay);
   });
 }
 

@@ -138,6 +138,88 @@ function setupMessageDebug(){
 // Activate messaging debugging in content context
 setupMessageDebug();
 
+// ---------------------------------------------------------------------------
+// openOrderAndClickLabel: open accordion row and trigger label action
+// ---------------------------------------------------------------------------
+async function openOrderAndClickLabel(iorder) {
+  const ordersRoot = document.querySelector('#orders_notes_snaps');
+  const accordion = ordersRoot?.querySelector('#accordion');
+  if (!accordion) throw new Error('Orders accordion not found');
+
+  const rows = [...accordion.querySelectorAll('.rwOrdr')];
+  const row = rows.find(r => r.textContent.includes(`#${iorder}`));
+  if (!row) throw new Error(`Order row #${iorder} not found`);
+  row.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+  log.info(`Opened accordion row for #${iorder}`);
+
+  const panelSel = `#O${iorder}`;
+  await waitFor(() => document.querySelector(panelSel), 12000, 200);
+
+  const panel = document.querySelector(panelSel);
+  const optsBtn = panel?.querySelector('.btn.btn-warning.dropdown-toggle');
+  if (!optsBtn) throw new Error('Order Options button not found');
+  optsBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+  log.info('Clicked Order Options');
+
+  const trySel = [
+    'a[onclick="viewDemoLabel();"]',
+    'a[onclick="viewReturnLabel();"]',
+    'a[onclick="sendReturnLabel();"]'
+  ];
+  const menuLink = trySel.map(s => panel.querySelector(s)).find(Boolean);
+  if (!menuLink) throw new Error('No label action found in menu');
+  menuLink.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+
+  let msg = 'Clicked View Demo Label';
+  if (menuLink.matches('a[onclick="viewReturnLabel();"]')) msg = 'Clicked View Rtn Label';
+  else if (menuLink.matches('a[onclick="sendReturnLabel();"]')) msg = 'Clicked Email Rtn Label';
+  log.info(msg);
+
+  chrome.runtime.sendMessage({ type: 'EXPECT_PDF', iorder });
+}
+
+function waitFor(fn, timeoutMs = 10000, poll = 100) {
+  return new Promise((res, rej) => {
+    const t0 = Date.now();
+    const id = setInterval(() => {
+      try {
+        const v = fn();
+        if (v) { clearInterval(id); res(v); return; }
+      } catch {}
+      if (Date.now() - t0 > timeoutMs) {
+        clearInterval(id);
+        rej(new Error('waitFor timeout'));
+      }
+    }, poll);
+  });
+}
+
+// Patch window.open to capture direct PDF opens
+(function patchWindowOpen(){
+  try {
+    const orig = window.open;
+    window.open = function(url, ...rest){
+      if (url) {
+        chrome.runtime.sendMessage({ type: 'PDF_CANDIDATE_URL', url, origin: 'window.open' });
+      }
+      return orig?.apply(this, [url, ...rest]);
+    };
+  } catch {}
+})();
+
+// Listen for background requests to trigger label click
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg && msg.type === 'OPEN_ORDER_AND_CLICK_LABEL') {
+    openOrderAndClickLabel(msg.iorder)
+      .then(() => sendResponse(true))
+      .catch(e => {
+        log.error('openOrderAndClickLabel error', String(e));
+        sendResponse(false);
+      });
+    return true;
+  }
+});
+
 (function () {
   // Defensive: make sure we only attach once (pages with partial reloads/modals)
   if (window.__HH_CONTENT_ATTACHED__) {
