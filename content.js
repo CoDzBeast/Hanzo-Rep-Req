@@ -15,12 +15,11 @@ const HH = (() => {
 
 // ----- Configurable selectors / keywords -----
 // Single location to tweak DOM hooks or text matching for demo returns.
-// These defaults are intentionally broad; narrow them per site structure.
-const DEMO_KEYWORDS = ['DEMO']; // terms identifying demo items
-const OUT_KEYWORDS  = ['OUT', 'IN USE', 'SIGNED', 'ON LOAN']; // statuses meaning the demo is out
+// These defaults are intentionally broad; adjust per site structure.
+const OUT_KEYWORDS  = ['O', 'OUT', 'IN USE', 'SIGNED', 'ON LOAN']; // statuses meaning the demo is out
 const SELECTORS = {
   table: 'table', // account table containing demo rows
-  orderLink: 'td:first-child a', // order number link within a row
+  orderLink: 'td:nth-child(2) a', // order number link within a row
   modalRoot: '.modal-dialog .modal-content', // root element of the shipping/demo modal
   viewLabelBtn: '[onclick*="viewReturnLabel"], a[href*="viewReturnLabel"]', // preferred action
   emailLabelBtn: '[onclick*="sendReturnLabel"], a[href*="sendReturnLabel"]', // fallback action
@@ -214,14 +213,13 @@ setupMessageDebug();
     const table = await DBG.step('waitTable', () => waitForElem(SELECTORS.table, 10000));
     if (!table) return; // timeout logged by waitForElem
 
-    const rows = Array.from(table.querySelectorAll('tr'));
+    const rows = Array.from(table.querySelectorAll('tbody tr'));
     const target = rows.find(r => {
-      const txt = (r.textContent || '').toUpperCase();
-      return DEMO_KEYWORDS.some(k => txt.includes(k)) &&
-             OUT_KEYWORDS.some(k => txt.includes(k));
+      const status = (r.querySelector('td')?.textContent || '').trim().toUpperCase();
+      return OUT_KEYWORDS.some(k => status.includes(k));
     });
     if (!target) {
-      HH.warn('no demo/out row found yet');
+      HH.warn('no out row found yet');
       return;
     }
 
