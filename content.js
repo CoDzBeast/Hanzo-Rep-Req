@@ -8,19 +8,48 @@ const log = Logger.make('Content');
 // Single location to tweak DOM hooks or text matching for demo returns.
 // These defaults are intentionally broad; adjust per site structure.
 const SEL = {
-  // Demo Shears area
-  demoHeaderH4: 'h4',
-  demoTable: '.boxed .table.table-striped',
-  // Orders area
+  demoBoxH4Text: 'Demo Shears',                // Title text to find the correct .boxed
   ordersBox: '#orders_notes_snaps',
   ordersTab: '#orders_tab',
   accordion: '#accordion',
+  orderRowMatcher: (n) => `#accordion .rwOrdr`, // we'll filter by textContent includes `#${n}`
   orderPanelByNumber: (n) => `#O${n}`,
   orderOptionsBtn: '.btn.btn-warning.dropdown-toggle',
   viewDemoLabel: 'a[onclick="viewDemoLabel();"]',
-  viewRtnLabel: 'a[onclick="viewReturnLabel();"]',
+  viewRtnLabel:  'a[onclick="viewReturnLabel();"]',
   emailRtnLabel: 'a[onclick="sendReturnLabel();"]',
 };
+
+// DO NOT USE: element.click() — always use safeClick
+const _click = HTMLElement.prototype.click;
+Object.defineProperty(HTMLElement.prototype, 'click', {
+  value: function() {
+    throw new Error('Direct element.click() is disabled; use safeClick() inside Orders only.');
+  }
+});
+
+function findDemoBox(){
+  return Array.from(document.querySelectorAll('h4'))
+    .find(h => (h.textContent || '').trim() === SEL.demoBoxH4Text)
+    ?.closest('.boxed') || null;
+}
+
+function findOrdersBox(){
+  return document.querySelector(SEL.ordersBox);
+}
+
+function within(node, root) { return !!(root && node && root.contains(node)); }
+
+function safeClick(el, {demoBox, ordersBox}) {
+  if (!el) throw new Error('safeClick: no element');
+  if (within(el, demoBox)) {
+    throw new Error('SAFEGUARD: attempted click inside Demo Shears box — forbidden');
+  }
+  if (!within(el, ordersBox)) {
+    throw new Error('SAFEGUARD: attempted click outside Orders box — forbidden');
+  }
+  el.dispatchEvent(new MouseEvent('click', {bubbles:true, cancelable:true, view:window}));
+}
 
 
 // Patch runtime messaging for detailed logging and timeout detection. This
@@ -181,6 +210,14 @@ setupMessageDebug();
   const state = { processing: false, done: new Set(), tabActivated: false };
   const cooldowns = new Map();
 
+  document.addEventListener('click', (e) => {
+    const demoBox = findDemoBox();
+    if (demoBox && within(e.target, demoBox) && e.target.closest('a[target="_new"]')){
+      e.preventDefault();
+      throw new Error('forbidden');
+    }
+  }, true);
+
   // Re-run logic when DOM mutates (table or accordion refreshed)
   const bodyObserver = new MutationObserver(() => {
     try { process(); } catch (e) { log.error('process error', String(e)); }
@@ -189,46 +226,45 @@ setupMessageDebug();
 
   async function process(){
     if (state.processing) return;
-    const orders = collectDemoOrderNos().filter(o => !state.done.has(o));
+    const demoBox = findDemoBox();
+    const ordersBox = findOrdersBox();
+    const orders = collectDemoOrderNos(demoBox).filter(o => !state.done.has(o));
     if (!orders.length) return;
+    logRate('found', `found OUT orders: [${orders.join(',')}]`);
     state.processing = true;
     for (const orderNo of orders){
-      await handleOrder(orderNo);
+      await handleOrder(orderNo, { demoBox, ordersBox });
       state.done.add(orderNo);
     }
     state.processing = false;
   }
 
   // Pull order numbers from Demo Shears without clicking links
-  function collectDemoOrderNos(){
-    const header = Array.from(document.querySelectorAll(SEL.demoHeaderH4))
-      .find(h => (h.textContent || '').trim() === 'Demo Shears');
-    const box = header?.closest('.boxed');
-    const table = box?.querySelector(SEL.demoTable);
-    if (!table) return [];
-    return Array.from(table.querySelectorAll('tbody tr')).reduce((acc, row) => {
+  function collectDemoOrderNos(demoBox){
+    const body = demoBox?.querySelector('tbody');
+    if (!body) return [];
+    return Array.from(body.querySelectorAll('tr')).reduce((acc, row) => {
       const status = (row.querySelector('td:nth-child(1)')?.textContent || '').trim().toUpperCase();
       if (status !== 'O') return acc; // only outbound demos
-      const orderNo = (row.querySelector('td:nth-child(2)')?.textContent || '').trim();
+      const orderNo = (row.querySelector('td:nth-child(2) a')?.textContent || '').trim();
       if (orderNo) acc.push(orderNo);
       return acc;
     }, []);
   }
 
   // Ensure the Orders, Notes tab is visible before searching for orders
-  function ensureOrdersTab(){
+  function ensureOrdersTab(ctx){
     const tab = document.querySelector(SEL.ordersTab);
     if (tab && !tab.classList.contains('active')){
-      log.info('activating Orders tab');
-      tab.click();
+      safeClick(tab, ctx);
     }
   }
 
   // Find the .rwOrdr row whose text contains the order number
-  async function findOrderRow(orderNo, maxMs = 10000){
-    let ttl = maxMs, delay = 200;
+  async function findOrderRow(orderNo){
+    let ttl = 60000, delay = 200;
     while (ttl > 0){
-      const rows = Array.from(document.querySelectorAll(`${SEL.accordion} .rwOrdr`));
+      const rows = Array.from(document.querySelectorAll(SEL.orderRowMatcher(orderNo)));
       const row = rows.find(r => (r.textContent || '').includes(`#${orderNo}`));
       if (row) return row;
       await sleep(delay);
@@ -240,25 +276,29 @@ setupMessageDebug();
   }
 
   // Expand the order in the accordion and trigger the appropriate label link
-  async function handleOrder(orderNo){
-    ensureOrdersTab();
+  async function handleOrder(orderNo, ctx){
+    ensureOrdersTab(ctx);
     const row = await findOrderRow(orderNo);
     if (!row) return;
-    log.info('opening order', { orderNo });
-    row.click();
-    const panel = await waitForElem(() => SEL.orderPanelByNumber(orderNo), 10000);
+    logRate(`open-${orderNo}`, `opening #${orderNo} in Orders`);
+    safeClick(row, ctx);
+    const panel = await waitForElem(() => document.querySelector(SEL.orderPanelByNumber(orderNo)), 10000);
     if (!panel){ warnRate(`panel-${orderNo}`, 'order panel not found', { orderNo }); return; }
+    await waitForElem(() => panel.querySelector('#Ord1, #TItems'), 10000);
 
     const optionsBtn = panel.querySelector(SEL.orderOptionsBtn);
-    if (optionsBtn) optionsBtn.click();
+    if (optionsBtn) safeClick(optionsBtn, ctx);
     await sleep(200); // allow dropdown to render
 
     const labelLink = panel.querySelector(SEL.viewDemoLabel) ||
       panel.querySelector(SEL.viewRtnLabel) ||
       panel.querySelector(SEL.emailRtnLabel);
     if (!labelLink){ warnRate(`label-${orderNo}`, 'label link missing', { orderNo }); return; }
-    log.info('triggering label', { orderNo });
-    labelLink.click();
+    safeClick(labelLink, ctx);
+    let msg = 'clicked View Demo Label';
+    if (labelLink.matches(SEL.viewRtnLabel)) msg = 'clicked View Return Label';
+    else if (labelLink.matches(SEL.emailRtnLabel)) msg = 'clicked Email Return Label';
+    logRate(`label-${orderNo}`, msg);
   }
 
   function sleep(ms){ return new Promise(res => setTimeout(res, ms)); }
@@ -271,12 +311,19 @@ setupMessageDebug();
     log.warn(msg, data);
   }
 
+  function logRate(key, msg, data){
+    const now = Date.now();
+    if (cooldowns.get(key) > now) return;
+    cooldowns.set(key, now + 5000);
+    log.info(msg, data);
+  }
+
   // Utility: wait for selector or timeout
   function waitForElem(sel, timeout = 5000){
     return new Promise((resolve) => {
       const start = Date.now();
       (function check(){
-        const el = typeof sel === 'function' ? document.querySelector(sel()) : document.querySelector(sel);
+        const el = typeof sel === 'function' ? sel() : document.querySelector(sel);
         if (el) {
           resolve(el);
         } else if (Date.now() - start > timeout) {
