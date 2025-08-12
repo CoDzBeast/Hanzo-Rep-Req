@@ -1,8 +1,8 @@
 /* background.js */
 /* global PDFLib */
-importScripts('pdf-lib.min.js'); // Debug in case missing file (see check below)
 
-// Consistent logger for background scope
+// Consistent logger for background scope. Defined before imports so we can log
+// issues during importScripts.
 const HH = (() => {
   const tag = '[HH][BG]';
   const ts = () => new Date().toISOString();
@@ -12,6 +12,14 @@ const HH = (() => {
     err:  (...a) => console.error(ts(), tag, ...a),
   };
 })();
+
+// Attempt to load pdf-lib; log explicit error if file missing or path wrong.
+// This prevents silent failure when deploying from GitHub/Codex.
+try {
+  importScripts('pdf-lib.min.js');
+} catch (e) {
+  HH.err('importScripts pdf-lib.min.js failed', String(e));
+}
 
 const ORIGIN = 'https://www.hattorihanzoshears.com';
 
@@ -75,10 +83,15 @@ async function withLock(fn){
     HH.log('withLock: already locked, skipping this cycle');
     return;
   }
+  HH.log('withLock: acquiring'); // Trace lock attempts
   await set(LOCK_KEY, { locked:true, ts:now });
+  HH.log('withLock: acquired'); // Confirm acquisition
   try { await fn(); }
   catch (e) { HH.err('withLock fn error', String(e)); }
-  finally { await set(LOCK_KEY, { locked:false, ts:Date.now() }); }
+  finally {
+    await set(LOCK_KEY, { locked:false, ts:Date.now() });
+    HH.log('withLock: released'); // Trace lock release
+  }
 }
 
 // ---------- Messages / startup / heartbeat ----------
@@ -111,75 +124,79 @@ chrome.alarms.onAlarm.addListener(a => {
 });
 
 // ---------- Processor ----------
+// Process queued jobs. Converted to loop to avoid deep recursion with many jobs.
+// Each iteration processes at most one job and then re-checks the queue.
 async function runProcessor(){
   await withLock(async () => {
-    let jobs = await get(JOBS_KEY, []);
-    const now = Date.now();
+    while (true) {
+      HH.log('runProcessor: checking queue'); // Trace each loop iteration
+      let jobs = await get(JOBS_KEY, []);
+      const now = Date.now();
 
-    // choose next eligible job
-    const idx = jobs.findIndex(j => (j.status === 'pending' || j.status === 'retry') && (j.nextAt || 0) <= now);
-    if (idx === -1) {
-      HH.log('runProcessor: no eligible jobs');
-      return;
-    }
-
-    const job = jobs[idx];
-    jobs[idx].status = 'processing';
-    await set(JOBS_KEY, jobs);
-
-    HH.log('Processing job', job);
-
-    try {
-      await processJob(job);
-
-      // success -> remove
-      jobs = await get(JOBS_KEY, []);
-      const pos = jobs.findIndex(j => j.jobId === job.jobId);
-      if (pos > -1) { jobs.splice(pos, 1); await set(JOBS_KEY, jobs); }
-      HH.log('Job completed', job.jobId);
-
-      // notify (optional)
-      try {
-        chrome.notifications.create(undefined, {
-          type: 'basic',
-          iconUrl: 'icon48.png',
-          title: 'Label queued',
-          message: `Order ${job.visibleOrder || ''} added`
-        });
-      } catch {}
-    } catch (err) {
-      const reason = (err && err.message) ? err.message : String(err);
-      HH.warn('Job failed', { jobId: job.jobId, reason });
-
-      // schedule retry or mark failed
-      jobs = await get(JOBS_KEY, []);
-      const pos = jobs.findIndex(j => j.jobId === job.jobId);
-      if (pos > -1) {
-        const tries = (jobs[pos].tries ?? 0) + 1;
-        if (tries >= MAX_TRIES) {
-          jobs[pos].status = 'failed';
-          jobs[pos].tries = tries;
-          HH.err('Job permanently failed', { jobId: job.jobId, tries, reason });
-        } else {
-          const backoff = Math.min(30000, 1000 * Math.pow(2, tries)); // 2s,4s,8s...
-          jobs[pos].status = 'retry';
-          jobs[pos].tries = tries;
-          jobs[pos].nextAt = Date.now() + backoff;
-          HH.warn('Job scheduled for retry', { jobId: job.jobId, tries, backoffMs: backoff, reason });
-        }
-        await set(JOBS_KEY, jobs);
+      // choose next eligible job
+      const idx = jobs.findIndex(j => (j.status === 'pending' || j.status === 'retry') && (j.nextAt || 0) <= now);
+      if (idx === -1) {
+        HH.log('runProcessor: no eligible jobs');
+        break;
       }
-    }
 
-    // Keep draining if more work is ready now
-    const more = (await get(JOBS_KEY, [])).some(j =>
-      (j.status === 'pending') || (j.status === 'retry' && (j.nextAt || 0) <= Date.now())
-    );
-    if (more) {
-      HH.log('More jobs ready; recursing runProcessor');
-      await runProcessor();
-    } else {
-      HH.log('Processor idle');
+      const job = jobs[idx];
+      jobs[idx].status = 'processing';
+      await set(JOBS_KEY, jobs);
+
+      HH.log('Processing job', job);
+
+      try {
+        await processJob(job);
+
+        // success -> remove
+        jobs = await get(JOBS_KEY, []);
+        const pos = jobs.findIndex(j => j.jobId === job.jobId);
+        if (pos > -1) { jobs.splice(pos, 1); await set(JOBS_KEY, jobs); }
+        HH.log('Job completed', job.jobId);
+
+        // notify (optional)
+        try {
+          chrome.notifications.create(undefined, {
+            type: 'basic',
+            iconUrl: 'icon48.png',
+            title: 'Label queued',
+            message: `Order ${job.visibleOrder || ''} added`
+          });
+        } catch {}
+      } catch (err) {
+        const reason = (err && err.message) ? err.message : String(err);
+        HH.warn('Job failed', { jobId: job.jobId, reason });
+
+        // schedule retry or mark failed
+        jobs = await get(JOBS_KEY, []);
+        const pos = jobs.findIndex(j => j.jobId === job.jobId);
+        if (pos > -1) {
+          const tries = (jobs[pos].tries ?? 0) + 1;
+          if (tries >= MAX_TRIES) {
+            jobs[pos].status = 'failed';
+            jobs[pos].tries = tries;
+            HH.err('Job permanently failed', { jobId: job.jobId, tries, reason });
+          } else {
+            const backoff = Math.min(30000, 1000 * Math.pow(2, tries)); // 2s,4s,8s...
+            jobs[pos].status = 'retry';
+            jobs[pos].tries = tries;
+            jobs[pos].nextAt = Date.now() + backoff;
+            HH.warn('Job scheduled for retry', { jobId: job.jobId, tries, backoffMs: backoff, reason });
+          }
+          await set(JOBS_KEY, jobs);
+        }
+      }
+
+      // After processing, check if more work is ready immediately.
+      const more = (await get(JOBS_KEY, [])).some(j =>
+        (j.status === 'pending') || (j.status === 'retry' && (j.nextAt || 0) <= Date.now())
+      );
+      if (!more) {
+        HH.log('Processor idle');
+        break;
+      }
+      // Loop continues to process next job
     }
   });
 }
@@ -310,8 +327,13 @@ async function tryViewDemoLabelWithRetries(tabId, iorder, maxTries, delayMs){
 }
 
 function waitPdfUrl(tabId, timeoutMs){
+  HH.log('waitPdfUrl: start', { tabId, timeoutMs }); // Trace entry
   return new Promise(resolve => {
-    let timer = setTimeout(() => { cleanup(); resolve(null); }, timeoutMs);
+    let timer = setTimeout(() => {
+      HH.warn('waitPdfUrl: timeout', { tabId, timeoutMs }); // Debug timeout path
+      cleanup();
+      resolve(null);
+    }, timeoutMs);
 
     function onUpdated(id, info){
       if (id !== tabId) return;
