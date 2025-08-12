@@ -13,6 +13,75 @@ const HH = (() => {
   };
 })();
 
+// Debug wrapper for runtime messaging to trace send/receive and timeouts.
+// Each context (background, content, popup) calls this to patch the default
+// chrome.runtime messaging APIs. We log all messages with timestamps and flag
+// any responses that do not arrive within 5s.
+function setupMessageDebug(){
+  // Wrap sendMessage
+  const origSend = chrome.runtime.sendMessage.bind(chrome.runtime);
+  chrome.runtime.sendMessage = (msg, options, cb) => {
+    let opts = options;
+    let callback = cb;
+    if (typeof options === 'function') { // sendMessage(msg, cb)
+      callback = options;
+      opts = undefined;
+    }
+    HH.log('sendMessage ->', msg);
+    const timer = setTimeout(() => {
+      HH.warn('sendMessage timeout', msg);
+    }, 5000);
+    const wrappedCb = (...args) => {
+      clearTimeout(timer);
+      HH.log('sendMessage <- reply', msg, args);
+      if (callback) callback(...args);
+    };
+    try {
+      return opts !== undefined ? origSend(msg, opts, wrappedCb) : origSend(msg, wrappedCb);
+    } catch (e) {
+      clearTimeout(timer);
+      HH.err('sendMessage exception', String(e), msg);
+      throw e;
+    }
+  };
+
+  // Wrap onMessage.addListener
+  const origAdd = chrome.runtime.onMessage.addListener;
+  chrome.runtime.onMessage.addListener = (fn) => {
+    const wrapped = (msg, sender, sendResponse) => {
+      HH.log('onMessage <-', msg, { sender });
+      let responded = false;
+      const timer = setTimeout(() => {
+        if (!responded) HH.warn('onMessage handler timeout', msg);
+      }, 5000);
+      const wrappedSend = (...args) => {
+        responded = true;
+        clearTimeout(timer);
+        HH.log('onMessage -> reply', msg, args);
+        try { sendResponse(...args); }
+        catch (e) { HH.err('sendResponse error', String(e)); }
+      };
+      let result = false;
+      try {
+        result = fn(msg, sender, wrappedSend);
+      } catch (e) {
+        clearTimeout(timer);
+        HH.err('onMessage handler exception', String(e));
+        throw e;
+      }
+      if (result !== true) {
+        responded = true;
+        clearTimeout(timer);
+      }
+      return result;
+    };
+    origAdd.call(chrome.runtime.onMessage, wrapped);
+  };
+}
+
+// Activate messaging debug for this background context
+setupMessageDebug();
+
 // Attempt to load pdf-lib; log explicit error if file missing or path wrong.
 // This prevents silent failure when deploying from GitHub/Codex.
 try {
@@ -95,14 +164,27 @@ async function withLock(fn){
 }
 
 // ---------- Messages / startup / heartbeat ----------
-chrome.runtime.onMessage.addListener((msg, _sender, _sendResponse) => {
+// Main message listener. We always send a response to prevent the message
+// channel from closing prematurely. Returning true keeps the service worker
+// alive until the async work completes.
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.type === 'ENQUEUE_SHIP_JOB') {
-    enqueueJob(msg.job).catch(e => HH.err('enqueueJob error', String(e), msg.job));
-    return;
+    enqueueJob(msg.job)
+      .then(() => sendResponse({ ok: true }))
+      .catch(e => {
+        HH.err('enqueueJob error', String(e), msg.job);
+        sendResponse({ ok: false, error: String(e) });
+      });
+    return true;
   }
   if (msg?.type === 'PRINT_ALL') {
-    printAllMerged().catch(e => HH.err('printAllMerged error', String(e)));
-    return;
+    printAllMerged()
+      .then(() => sendResponse({ ok: true }))
+      .catch(e => {
+        HH.err('printAllMerged error', String(e));
+        sendResponse({ ok: false, error: String(e) });
+      });
+    return true;
   }
 });
 

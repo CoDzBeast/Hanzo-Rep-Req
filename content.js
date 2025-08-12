@@ -13,6 +13,72 @@ const HH = (() => {
   };
 })();
 
+// Patch runtime messaging for detailed logging and timeout detection. This
+// mirrors the helper used in background.js so we can trace every message in
+// both directions.
+function setupMessageDebug(){
+  // Wrap sendMessage
+  const origSend = chrome.runtime.sendMessage.bind(chrome.runtime);
+  chrome.runtime.sendMessage = (msg, options, cb) => {
+    let opts = options;
+    let callback = cb;
+    if (typeof options === 'function') {
+      callback = options;
+      opts = undefined;
+    }
+    HH.log('sendMessage ->', msg);
+    const timer = setTimeout(() => HH.warn('sendMessage timeout', msg), 5000);
+    const wrappedCb = (...args) => {
+      clearTimeout(timer);
+      HH.log('sendMessage <- reply', msg, args);
+      if (callback) callback(...args);
+    };
+    try {
+      return opts !== undefined ? origSend(msg, opts, wrappedCb) : origSend(msg, wrappedCb);
+    } catch (e) {
+      clearTimeout(timer);
+      HH.err('sendMessage exception', String(e), msg);
+      throw e;
+    }
+  };
+
+  // Wrap onMessage listener
+  const origAdd = chrome.runtime.onMessage.addListener;
+  chrome.runtime.onMessage.addListener = (fn) => {
+    const wrapped = (msg, sender, sendResponse) => {
+      HH.log('onMessage <-', msg, { sender });
+      let responded = false;
+      const timer = setTimeout(() => {
+        if (!responded) HH.warn('onMessage handler timeout', msg);
+      }, 5000);
+      const wrappedSend = (...args) => {
+        responded = true;
+        clearTimeout(timer);
+        HH.log('onMessage -> reply', msg, args);
+        try { sendResponse(...args); }
+        catch (e) { HH.err('sendResponse error', String(e)); }
+      };
+      let result = false;
+      try {
+        result = fn(msg, sender, wrappedSend);
+      } catch (e) {
+        clearTimeout(timer);
+        HH.err('onMessage handler exception', String(e));
+        throw e;
+      }
+      if (result !== true) {
+        responded = true;
+        clearTimeout(timer);
+      }
+      return result;
+    };
+    origAdd.call(chrome.runtime.onMessage, wrapped);
+  };
+}
+
+// Activate messaging debugging in content context
+setupMessageDebug();
+
 (function () {
   // Defensive: make sure we only attach once (pages with partial reloads/modals)
   if (window.__HH_CONTENT_ATTACHED__) {
@@ -56,6 +122,8 @@ const HH = (() => {
     };
 
     try {
+      // Send before the page navigates away; capturing listener fires prior to
+      // any default navigation triggered by the button click.
       chrome.runtime.sendMessage({ type: 'ENQUEUE_SHIP_JOB', job }, () => {
         // Runtime errors (e.g., service worker asleep) surface here
         const err = chrome.runtime.lastError;
