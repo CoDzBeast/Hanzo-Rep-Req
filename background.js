@@ -129,7 +129,9 @@ async function enqueueJob(job){
   const jobs = await get(JOBS_KEY, []);
   jobs.push({ ...job, status: 'pending', tries: 0, nextAt: 0 });
   await set(JOBS_KEY, jobs);
-  await runProcessor(); // kick immediately
+  // Kick the processor without awaiting so we can respond to the sender
+  // immediately. Any errors are logged.
+  runProcessor().catch(e => HH.err('runProcessor enqueue error', String(e)));
 }
 
 async function pushLabel(item){
