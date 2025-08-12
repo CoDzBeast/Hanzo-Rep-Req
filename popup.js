@@ -15,6 +15,7 @@ const listEl = document.getElementById('list');
 const sumEl  = document.getElementById('summary');
 
 async function load() {
+  HH.log('load invoked'); // Trace popup refresh
   try {
     const all = await chrome.storage.local.get([LABELS_KEY, JOBS_KEY]);
     const labels = Array.isArray(all[LABELS_KEY]) ? all[LABELS_KEY] : [];
@@ -24,6 +25,7 @@ async function load() {
     const pending = jobs.filter(j => j.status === 'pending' || j.status === 'processing' || j.status === 'retry').length;
     const failed  = jobs.filter(j => j.status === 'failed').length;
 
+    HH.log('queue stats', { queued, pending, failed }); // Log counts for debugging
     sumEl.textContent = `Queued: ${queued} | In-Process: ${pending} | Failed: ${failed}`;
 
     if (!labels.length) {
@@ -68,7 +70,10 @@ document.getElementById('clear').addEventListener('click', async () => {
 
 // Live refresh when background updates storage
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === 'local' && (LABELS_KEY in changes || JOBS_KEY in changes)) load();
+  if (area === 'local' && (LABELS_KEY in changes || JOBS_KEY in changes)) {
+    HH.log('storage change', { changes }); // Helps trace live updates
+    load();
+  }
 });
 
 load();

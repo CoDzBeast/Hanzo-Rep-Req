@@ -39,6 +39,9 @@ const HH = (() => {
     const accountUrl = accountUrlEl?.getAttribute('href') || null; // e.g. /cgi-bin/AccountInfo.cfm?iP=226963
     const visibleOrder = (modal.querySelector('#iOrd1')?.textContent || '').trim() || null;
 
+    // Log values early to trace DOM extraction issues.
+    HH.log('Ship It! captured', { accountUrl, visibleOrder });
+
     if (!accountUrl) {
       // Clear message why job not enqueued
       HH.err('Account URL (#Cust0) missing; job NOT enqueued', { visibleOrder });
