@@ -1,0 +1,38 @@
+{
+  "name": "HH Return Label Queue",
+  "description": "Queue demo return labels while shipping and print all at once.",
+  "version": "1.0.1",
+  "manifest_version": 3,
+
+  /* Permissions: keep minimal but sufficient */
+  "permissions": [
+    "storage",
+    "scripting",
+    "tabs",
+    "alarms",
+    "notifications"
+  ],
+
+  /* Host permissions: limit to your domain */
+  "host_permissions": [
+    "https://www.hattorihanzoshears.com/*"
+  ],
+
+  "background": {
+    /* Classic service worker (not module) so we can importScripts(pdf-lib) */
+    "service_worker": "background.js"
+  },
+
+  "action": {
+    "default_title": "Label Queue",
+    "default_popup": "popup.html"
+  },
+
+  /* Icons optional; keep or remove if you prefer no icon */
+  "icons": {
+    "16": "icon16.png",
+    "32": "icon32.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  }
+}
