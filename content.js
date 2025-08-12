@@ -7,15 +7,19 @@ const log = Logger.make('Content');
 // ----- Configurable selectors / keywords -----
 // Single location to tweak DOM hooks or text matching for demo returns.
 // These defaults are intentionally broad; adjust per site structure.
-const OUT_KEYWORDS  = ['O', 'OUT', 'IN USE', 'SIGNED', 'ON LOAN']; // statuses meaning the demo is out
-const SELECTORS = {
-  table: 'table', // legacy account table containing demo rows
-  orderLink: 'td:nth-child(2) a', // order number link within a row (legacy)
-  orderPanel: '.phOrder', // new order container used on updated pages
-  orderHeader: '.rwOrdr', // clickable order header row within a panel
-  modalRoot: '.modal-dialog .modal-content', // root element of the shipping/demo modal
-  viewLabelBtn: '[onclick*="viewReturnLabel"], a[href*="viewReturnLabel"]', // preferred action
-  emailLabelBtn: '[onclick*="sendReturnLabel"], a[href*="sendReturnLabel"]', // fallback action
+const SEL = {
+  // Demo Shears area
+  demoHeaderH4: 'h4',
+  demoTable: '.boxed .table.table-striped',
+  // Orders area
+  ordersBox: '#orders_notes_snaps',
+  ordersTab: '#orders_tab',
+  accordion: '#accordion',
+  orderPanelByNumber: (n) => `#O${n}`,
+  orderOptionsBtn: '.btn.btn-warning.dropdown-toggle',
+  viewDemoLabel: 'a[onclick="viewDemoLabel();"]',
+  viewRtnLabel: 'a[onclick="viewReturnLabel();"]',
+  emailRtnLabel: 'a[onclick="sendReturnLabel();"]',
 };
 
 
@@ -169,146 +173,102 @@ setupMessageDebug();
 })();
 
 // ---------------------------------------------------------------------------
-// Demo return automation: auto-click demo order and fetch return label
+// Demo return automation: read demo table, find matching orders, and open return labels
 // ---------------------------------------------------------------------------
 (function(){
   log.info('demo automation ready');
 
-  const state = { orderClicked: false, labelClicked: false, searching: false };
+  const state = { processing: false, done: new Set(), tabActivated: false };
   const cooldowns = new Map();
 
-  // Re-run logic when DOM mutates (table or modal replaced)
+  // Re-run logic when DOM mutates (table or accordion refreshed)
   const bodyObserver = new MutationObserver(() => {
     try { process(); } catch (e) { log.error('process error', String(e)); }
   });
   bodyObserver.observe(document.documentElement, { childList: true, subtree: true });
 
   async function process(){
-    if (state.orderClicked || state.searching) return;
-    state.searching = true;
-    const rows = await waitForDemoRows();
-    state.searching = false;
-    if (!rows.length) return;
-    const targetRow = rows[0];
-    const orderNo = (targetRow.querySelector('td:nth-child(2)')?.textContent || '').trim();
-    if (!orderNo) return;
-    if (cooldowns.get(orderNo) > Date.now()) return;
-    const link = await ensureOrderLink(targetRow, orderNo);
-    if (!link) { cooldowns.set(orderNo, Date.now() + 10000); return; }
-    log.info('clicking order', { orderNo });
-    state.orderClicked = true;
-    link.click();
-    waitForModal();
+    if (state.processing) return;
+    const orders = collectDemoOrderNos().filter(o => !state.done.has(o));
+    if (!orders.length) return;
+    state.processing = true;
+    for (const orderNo of orders){
+      await handleOrder(orderNo);
+      state.done.add(orderNo);
+    }
+    state.processing = false;
   }
 
-  function findDemoOutRows(){
-    const rows = Array.from(document.querySelectorAll('tr'));
-    return rows.filter(r => {
-      const cells = Array.from(r.querySelectorAll('td'));
-      const texts = cells.map(td => (td.textContent || '').trim().toUpperCase());
-      return texts.some(t => OUT_KEYWORDS.some(k => k.length === 1 ? t === k : t.includes(k)));
-    });
+  // Pull order numbers from Demo Shears without clicking links
+  function collectDemoOrderNos(){
+    const header = Array.from(document.querySelectorAll(SEL.demoHeaderH4))
+      .find(h => (h.textContent || '').trim() === 'Demo Shears');
+    const box = header?.closest('.boxed');
+    const table = box?.querySelector(SEL.demoTable);
+    if (!table) return [];
+    return Array.from(table.querySelectorAll('tbody tr')).reduce((acc, row) => {
+      const status = (row.querySelector('td:nth-child(1)')?.textContent || '').trim().toUpperCase();
+      if (status !== 'O') return acc; // only outbound demos
+      const orderNo = (row.querySelector('td:nth-child(2)')?.textContent || '').trim();
+      if (orderNo) acc.push(orderNo);
+      return acc;
+    }, []);
   }
 
-  async function waitForDemoRows(maxMs = 60000){
-    let delay = 300, ttl = maxMs;
-    let started = false;
+  // Ensure the Orders, Notes tab is visible before searching for orders
+  function ensureOrdersTab(){
+    const tab = document.querySelector(SEL.ordersTab);
+    if (tab && !tab.classList.contains('active')){
+      log.info('activating Orders tab');
+      tab.click();
+    }
+  }
+
+  // Find the .rwOrdr row whose text contains the order number
+  async function findOrderRow(orderNo, maxMs = 10000){
+    let ttl = maxMs, delay = 200;
     while (ttl > 0){
-      const rows = findDemoOutRows();
-      if (rows.length){
-        if (started) log.info('demo/out rows found', { count: rows.length });
-        return rows;
-      }
-      if (!started){ log.debug('waiting for demo/out rows'); started = true; }
-      log.debug('no demo/out row yet', { delay });
+      const rows = Array.from(document.querySelectorAll(`${SEL.accordion} .rwOrdr`));
+      const row = rows.find(r => (r.textContent || '').includes(`#${orderNo}`));
+      if (row) return row;
       await sleep(delay);
       ttl -= delay;
-      delay = Math.min(delay * 2, 3000);
+      delay = Math.min(delay * 1.5, 1000);
     }
-    log.warn('demo/out rows not found after ttl', { maxMs });
-    return [];
-  }
-
-  async function ensureOrderLink(row, orderNo){
-    const selectorsTried = [SELECTORS.orderHeader, SELECTORS.orderLink];
-    let link = row.querySelector(SELECTORS.orderHeader) || row.querySelector(SELECTORS.orderLink);
-    if (link) return link;
-    const counts = {
-      panels: document.querySelectorAll(SELECTORS.orderPanel).length,
-      headers: document.querySelectorAll(SELECTORS.orderHeader).length,
-    };
-    let textScan = false;
-    if (!document.querySelector(SELECTORS.orderPanel)) {
-      refreshOrdersAccordion();
-      await sleep(200);
-      link = row.querySelector(SELECTORS.orderHeader) || row.querySelector(SELECTORS.orderLink);
-      if (link) return link;
-    }
-    if (!link && counts.headers === 0){
-      textScan = true;
-      link = Array.from(document.querySelectorAll('a, span, div')).find(el => (el.textContent || '').trim() === orderNo);
-      if (link) return link;
-    }
-    log.warn('order link not found', { orderNo, selectorsTried, counts, textScan });
+    warnRate(`row-${orderNo}`, 'order row not found', { orderNo });
     return null;
   }
 
-  function refreshOrdersAccordion(){
-    const toggle = Array.from(document.querySelectorAll('a,button')).find(el => /Orders/i.test(el.textContent || ''));
-    if (toggle) toggle.click();
+  // Expand the order in the accordion and trigger the appropriate label link
+  async function handleOrder(orderNo){
+    ensureOrdersTab();
+    const row = await findOrderRow(orderNo);
+    if (!row) return;
+    log.info('opening order', { orderNo });
+    row.click();
+    const panel = await waitForElem(() => SEL.orderPanelByNumber(orderNo), 10000);
+    if (!panel){ warnRate(`panel-${orderNo}`, 'order panel not found', { orderNo }); return; }
+
+    const optionsBtn = panel.querySelector(SEL.orderOptionsBtn);
+    if (optionsBtn) optionsBtn.click();
+    await sleep(200); // allow dropdown to render
+
+    const labelLink = panel.querySelector(SEL.viewDemoLabel) ||
+      panel.querySelector(SEL.viewRtnLabel) ||
+      panel.querySelector(SEL.emailRtnLabel);
+    if (!labelLink){ warnRate(`label-${orderNo}`, 'label link missing', { orderNo }); return; }
+    log.info('triggering label', { orderNo });
+    labelLink.click();
   }
 
   function sleep(ms){ return new Promise(res => setTimeout(res, ms)); }
 
-  // Wait for modal, then click view/email return label
-  async function waitForModal(retry = 0){
-    const modal = await log.step('waitModal', () => waitForElem(SELECTORS.modalRoot, 10000));
-    if (!modal) {
-      if (retry < 5) {
-        const delay = 500 * Math.pow(2, retry);
-        log.warn('modal not found; retrying', { retry, delay });
-        setTimeout(() => waitForModal(retry + 1), delay);
-      }
-      return;
-    }
-
-    await log.step('modalStabilize', () => waitForStable(modal));
-
-    if (state.labelClicked) return; // idempotent
-    const viewBtn = modal.querySelector(SELECTORS.viewLabelBtn);
-    if (viewBtn) {
-      log.info('clicking View Rtn Label');
-      state.labelClicked = true;
-      viewBtn.click();
-      return;
-    }
-    const emailBtn = modal.querySelector(SELECTORS.emailLabelBtn);
-    if (emailBtn) {
-      log.info('clicking Email Rtn Label');
-      state.labelClicked = true;
-      emailBtn.click();
-      return;
-    }
-
-    // Fallback to calling global functions if buttons absent
-    if (typeof window.viewReturnLabel === 'function') {
-      log.info('calling viewReturnLabel()');
-      state.labelClicked = true;
-      window.viewReturnLabel();
-      return;
-    }
-    if (typeof window.sendReturnLabel === 'function') {
-      log.info('calling sendReturnLabel()');
-      state.labelClicked = true;
-      window.sendReturnLabel();
-      return;
-    }
-
-    if (retry < 5) {
-      const delay = 500 * Math.pow(2, retry);
-      log.warn('label action missing; retrying', { retry, delay });
-      setTimeout(() => waitForModal(retry + 1), delay);
-    }
+  // Rate-limited warnings to avoid log spam
+  function warnRate(key, msg, data){
+    const now = Date.now();
+    if (cooldowns.get(key) > now) return;
+    cooldowns.set(key, now + 5000);
+    log.warn(msg, data);
   }
 
   // Utility: wait for selector or timeout
@@ -316,33 +276,15 @@ setupMessageDebug();
     return new Promise((resolve) => {
       const start = Date.now();
       (function check(){
-        const el = document.querySelector(sel);
+        const el = typeof sel === 'function' ? document.querySelector(sel()) : document.querySelector(sel);
         if (el) {
-          log.debug('selector found', { sel });
           resolve(el);
         } else if (Date.now() - start > timeout) {
-          log.warn('selector timeout', { sel });
           resolve(null);
         } else {
           setTimeout(check, 100);
         }
       })();
-    });
-  }
-
-  // Utility: wait for element to stay stable (no DOM mutations) for 500ms
-  function waitForStable(el, idle = 500){
-    return new Promise((resolve) => {
-      let timer = setTimeout(done, idle);
-      const mo = new MutationObserver(() => {
-        clearTimeout(timer);
-        timer = setTimeout(done, idle);
-      });
-      function done(){
-        mo.disconnect();
-        resolve();
-      }
-      mo.observe(el, { childList: true, subtree: true });
     });
   }
 
