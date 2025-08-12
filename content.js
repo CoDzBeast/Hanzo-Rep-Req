@@ -149,7 +149,20 @@ async function openOrderAndClickLabel(iorder) {
   const rows = [...accordion.querySelectorAll('.rwOrdr')];
   const row = rows.find(r => r.textContent.includes(`#${iorder}`));
   if (!row) throw new Error(`Order row #${iorder} not found`);
-  row.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+
+  // Some order rows are rendered as direct <a> links which navigate to the
+  // inventory page when clicked. That navigation breaks our flow because we
+  // only need to expand the accordion row. If we detect such a link, attach a
+  // temporary handler to prevent the default navigation before using safeClick
+  // to trigger the expansion.
+  const ctx = { demoBox: findDemoBox(), ordersBox: findOrdersBox() };
+  const link = row.querySelector('a[href*="my_inventory.cfm"]');
+  if (link) {
+    link.addEventListener('click', e => e.preventDefault(), { once: true });
+    safeClick(link, ctx);
+  } else {
+    safeClick(row, ctx);
+  }
   log.info(`Opened accordion row for #${iorder}`);
 
   const panelSel = `#O${iorder}`;
