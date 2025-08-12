@@ -18,8 +18,10 @@ const HH = (() => {
 // These defaults are intentionally broad; adjust per site structure.
 const OUT_KEYWORDS  = ['O', 'OUT', 'IN USE', 'SIGNED', 'ON LOAN']; // statuses meaning the demo is out
 const SELECTORS = {
-  table: 'table', // account table containing demo rows
-  orderLink: 'td:nth-child(2) a', // order number link within a row
+  table: 'table', // legacy account table containing demo rows
+  orderLink: 'td:nth-child(2) a', // order number link within a row (legacy)
+  orderPanel: '.phOrder', // new order container used on updated pages
+  orderHeader: '.rwOrdr', // clickable order header row within a panel
   modalRoot: '.modal-dialog .modal-content', // root element of the shipping/demo modal
   viewLabelBtn: '[onclick*="viewReturnLabel"], a[href*="viewReturnLabel"]', // preferred action
   emailLabelBtn: '[onclick*="sendReturnLabel"], a[href*="sendReturnLabel"]', // fallback action
@@ -210,26 +212,37 @@ setupMessageDebug();
   // Main process orchestrator
   async function process(){
     if (state.orderClicked) return; // already acted
-    const table = await DBG.step('waitTable', () => waitForElem(SELECTORS.table, 10000));
-    if (!table) return; // timeout logged by waitForElem
 
-    const rows = Array.from(table.querySelectorAll('tbody tr'));
-    const target = rows.find(r => {
-      const status = (r.querySelector('td')?.textContent || '').trim().toUpperCase();
-      return OUT_KEYWORDS.some(k => status.includes(k));
+    // Wait for at least one order panel to exist. Older pages used a table,
+    // so we fall back to that selector if the new container isn't present.
+    const root = await DBG.step('waitOrder', () =>
+      waitForElem(`${SELECTORS.orderPanel}, ${SELECTORS.table}`, 10000)
+    );
+    if (!root) return; // timeout logged by waitForElem
+
+    // Scan all table rows on the page for any cell containing an OUT keyword.
+    const rows = Array.from(document.querySelectorAll('tr'));
+    const targetRow = rows.find(r => {
+      const cells = Array.from(r.querySelectorAll('td'));
+      const texts = cells.map(td => (td.textContent || '').trim().toUpperCase());
+      return texts.some(t => OUT_KEYWORDS.some(k => t.includes(k)));
     });
-    if (!target) {
-      HH.warn('no out row found yet');
+    if (!targetRow) {
+      HH.warn('no demo/out row found yet');
       return;
     }
 
-    const link = target.querySelector(SELECTORS.orderLink);
+    // Locate the clickable order header within the same panel
+    const panel = targetRow.closest(SELECTORS.orderPanel);
+    const link = panel?.querySelector(SELECTORS.orderHeader) ||
+                 targetRow.querySelector(SELECTORS.orderHeader) ||
+                 targetRow.querySelector(SELECTORS.orderLink);
     if (!link) {
       HH.err('order link not found in target row');
       return;
     }
-    const ord = link.textContent.trim();
-    HH.log('clicking order', ord);
+    const ord = (link.textContent || '').trim();
+    HH.log('clicking order', ord || '(no text)');
     state.orderClicked = true;
     link.click();
     waitForModal();
