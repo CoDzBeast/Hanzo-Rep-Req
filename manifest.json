@@ -9,6 +9,7 @@
     "storage",
     "scripting",
     "tabs",
+    "webNavigation",
     "alarms",
     "notifications"
   ],
