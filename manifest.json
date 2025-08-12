@@ -21,7 +21,7 @@
   "content_scripts": [
     {
       "matches": ["https://www.hattorihanzoshears.com/*"],
-      "js": ["content.js"],
+      "js": ["logger.js", "content.js"],
       "run_at": "document_idle"
     }
   ],
