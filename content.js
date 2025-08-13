@@ -382,9 +382,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     const link = row.querySelector('a[href*="iorder="]');
     const iorder = /iorder=(\d+)/i.exec(link?.href || '')?.[1] || orderNo;
     labelLog.debug('mapped to iorder', { visibleOrder: orderNo, iorder });
-    safeClick(row, ctx);
+    if (link) {
+      link.addEventListener('click', e => e.preventDefault(), { once: true });
+      safeClick(link, ctx);
+    } else {
+      safeClick(row, ctx);
+    }
     labelLog.debug('opening order row', { iorder });
-    const panel = await waitForElem(() => document.querySelector(SEL.orderPanelByNumber(orderNo)), 10000);
+    const panel = await waitForElem(() => document.querySelector(SEL.orderPanelByNumber(iorder)), 10000);
     if (!panel){ labelLog.dedup('order panel not found', { orderNo }, 'warn'); return; }
     await waitForElem(() => panel.querySelector('#Ord1, #TItems'), 10000);
 
