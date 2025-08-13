@@ -146,37 +146,43 @@ setupMessageDebug();
 // ---------------------------------------------------------------------------
 // openOrderAndClickLabel: open accordion row and trigger label action
 // ---------------------------------------------------------------------------
-async function openOrderAndClickLabel(iorder) {
+async function openOrderAndClickLabel(iorder, visibleOrder) {
   const ordersRoot = document.querySelector('#orders_notes_snaps');
   const accordion = ordersRoot?.querySelector('#accordion');
   if (!accordion) throw new Error('Orders accordion not found');
 
   const rows = [...accordion.querySelectorAll('.rwOrdr')];
-  const row = rows.find(r => r.textContent.includes(`#${iorder}`));
-  if (!row) throw new Error(`Order row #${iorder} not found`);
-  labelLog.debug('opening order row', { iorder });
+  let row = null;
+  if (visibleOrder) {
+    row = rows.find(r => (r.textContent || '').includes(`#${visibleOrder}`));
+  }
+  if (!row && iorder) {
+    row = rows.find(r => (r.textContent || '').includes(`#${iorder}`) || r.querySelector(`a[href*="iorder=${iorder}"]`));
+  }
+  if (!row) throw new Error(`Order row not found for iorder=${iorder} visibleOrder=${visibleOrder}`);
 
-  // Some order rows are rendered as direct <a> links which navigate to the
-  // inventory page when clicked. That navigation breaks our flow because we
-  // only need to expand the accordion row. If we detect such a link, attach a
-  // temporary handler to prevent the default navigation before using safeClick
-  // to trigger the expansion.
+  // attempt to derive actual iorder from link
+  let actualIorder = iorder;
   const ctx = { demoBox: findDemoBox(), ordersBox: findOrdersBox() };
-  const link = row.querySelector('a[href*="my_inventory.cfm"]');
+  const link = row.querySelector('a[href*="my_inventory.cfm"][href*="iorder="]');
   if (link) {
+    const href = link.getAttribute('href') || '';
+    const m = /iorder=(\d+)/i.exec(href);
+    if (m) actualIorder = m[1];
     link.addEventListener('click', e => e.preventDefault(), { once: true });
     safeClick(link, ctx);
   } else {
     safeClick(row, ctx);
   }
-  const panelSel = `#O${iorder}`;
+  labelLog.debug('opening order row', { iorder: actualIorder, visibleOrder });
+  const panelSel = `#O${actualIorder}`;
   await waitFor(() => document.querySelector(panelSel), 12000, 200);
 
   const panel = document.querySelector(panelSel);
   const optsBtn = panel?.querySelector('.btn.btn-warning.dropdown-toggle');
   if (!optsBtn) throw new Error('Order Options button not found');
   optsBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-  labelLog.debug('order options opened', { iorder });
+  labelLog.debug('order options opened', { iorder: actualIorder });
 
   const trySel = [
     'a[onclick="viewDemoLabel();"]',
@@ -187,12 +193,12 @@ async function openOrderAndClickLabel(iorder) {
   if (!menuLink) throw new Error('No label action found in menu');
   menuLink.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
 
-  let action = 'View Demo Label';
-  if (menuLink.matches('a[onclick="viewReturnLabel();"]')) action = 'View Return Label';
-  else if (menuLink.matches('a[onclick="sendReturnLabel();"]')) action = 'Email Return Label';
-  labelLog.debug('clicked label', { action, iorder });
+    let action = 'View Demo Label';
+    if (menuLink.matches('a[onclick="viewReturnLabel();"]')) action = 'View Return Label';
+    else if (menuLink.matches('a[onclick="sendReturnLabel();"]')) action = 'Email Return Label';
+    labelLog.debug('clicked label', { action, iorder: actualIorder });
 
-  chrome.runtime.sendMessage({ type: 'EXPECT_PDF', iorder });
+    chrome.runtime.sendMessage({ type: 'EXPECT_PDF', iorder: actualIorder });
 }
 
 function waitFor(fn, timeoutMs = 10000, poll = 100) {
@@ -226,17 +232,17 @@ function waitFor(fn, timeoutMs = 10000, poll = 100) {
 })();
 
 // Listen for background requests to trigger label click
-chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (msg && msg.type === 'OPEN_ORDER_AND_CLICK_LABEL') {
-    openOrderAndClickLabel(msg.iorder)
-      .then(() => sendResponse(true))
-      .catch(e => {
-        log.error('openOrderAndClickLabel error', String(e));
-        sendResponse(false);
-      });
-    return true;
-  }
-});
+  chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    if (msg && msg.type === 'OPEN_ORDER_AND_CLICK_LABEL') {
+      openOrderAndClickLabel(msg.iorder, msg.visibleOrder)
+        .then(() => sendResponse(true))
+        .catch(e => {
+          log.error('openOrderAndClickLabel error', String(e));
+          sendResponse(false);
+        });
+      return true;
+    }
+  });
 
 (function () {
   // Defensive: make sure we only attach once (pages with partial reloads/modals)
