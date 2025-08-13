@@ -49,6 +49,10 @@ function safeClick(el, {demoBox, ordersBox}) {
   if (!within(el, ordersBox)) {
     throw new Error('SAFEGUARD: attempted click outside Orders box — forbidden');
   }
+  const href = typeof el.getAttribute === 'function' ? (el.getAttribute('href') || '') : '';
+  if (el.tagName === 'A' && href.trim().toLowerCase().startsWith('javascript:')) {
+    el.addEventListener('click', e => e.preventDefault(), { once: true, capture: true });
+  }
   el.dispatchEvent(new MouseEvent('click', {bubbles:true, cancelable:true, view:window}));
 }
 
