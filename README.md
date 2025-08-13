@@ -1,18 +1,14 @@
 # HH Return Label Queue
 
-This extension uses a structured `Logger` to reduce console noise.
+This extension uses a scoped logger with namespaces and levels. Logging
+settings are stored in `chrome.storage.local` and can be changed from the
+extension's options page or by right‑clicking the extension icon and choosing a
+preset:
 
-## Debug levels
-Set the desired level in the DevTools console:
+- **Quiet** – warn/error only (default)
+- **Focus Label Debug** – enables debug logs for the `HH:label` namespace
+- **Full Trace** – trace for all namespaces with sampling & rate limiting
 
-```js
-window.HH_DEBUG_LEVEL = 'debug'; // error | warn | info | debug | trace
-```
-
-For high-volume trace sampling, choose a value between 0 and 1:
-
-```js
-window.HH_DEBUG_SAMPLING = 0.25; // 25% of debug/trace logs
-```
-
-The logger rate‑limits repeated messages and prints a `[HH][Summary]` line every 30s (and on page hide/unload) with counts of suppressed messages.
+Each log line is timestamped and structured: `YYYY-MM-DDTHH:mm:ss.SSSZ [NS]
+level message {json}`. Repeated identical messages are de‑duplicated and
+summarised periodically.

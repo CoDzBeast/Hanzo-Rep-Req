@@ -2,7 +2,8 @@
 // Purpose: Listen ONLY for "Ship It!" clicks inside the shipping modal,
 // extract account URL and visible order, and enqueue a background job.
 
-const log = Logger.make('Content');
+const log = createLogger('HH:content');
+const labelLog = createLogger('HH:label');
 
 // ----- Configurable selectors / keywords -----
 // Single location to tweak DOM hooks or text matching for demo returns.
@@ -149,6 +150,7 @@ async function openOrderAndClickLabel(iorder) {
   const rows = [...accordion.querySelectorAll('.rwOrdr')];
   const row = rows.find(r => r.textContent.includes(`#${iorder}`));
   if (!row) throw new Error(`Order row #${iorder} not found`);
+  labelLog.debug('opening order row', { iorder });
 
   // Some order rows are rendered as direct <a> links which navigate to the
   // inventory page when clicked. That navigation breaks our flow because we
@@ -163,8 +165,6 @@ async function openOrderAndClickLabel(iorder) {
   } else {
     safeClick(row, ctx);
   }
-  log.info(`Opened accordion row for #${iorder}`);
-
   const panelSel = `#O${iorder}`;
   await waitFor(() => document.querySelector(panelSel), 12000, 200);
 
@@ -172,7 +172,7 @@ async function openOrderAndClickLabel(iorder) {
   const optsBtn = panel?.querySelector('.btn.btn-warning.dropdown-toggle');
   if (!optsBtn) throw new Error('Order Options button not found');
   optsBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-  log.info('Clicked Order Options');
+  labelLog.debug('order options opened', { iorder });
 
   const trySel = [
     'a[onclick="viewDemoLabel();"]',
@@ -183,10 +183,10 @@ async function openOrderAndClickLabel(iorder) {
   if (!menuLink) throw new Error('No label action found in menu');
   menuLink.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
 
-  let msg = 'Clicked View Demo Label';
-  if (menuLink.matches('a[onclick="viewReturnLabel();"]')) msg = 'Clicked View Rtn Label';
-  else if (menuLink.matches('a[onclick="sendReturnLabel();"]')) msg = 'Clicked Email Rtn Label';
-  log.info(msg);
+  let action = 'View Demo Label';
+  if (menuLink.matches('a[onclick="viewReturnLabel();"]')) action = 'View Return Label';
+  else if (menuLink.matches('a[onclick="sendReturnLabel();"]')) action = 'Email Return Label';
+  labelLog.debug('clicked label', { action, iorder });
 
   chrome.runtime.sendMessage({ type: 'EXPECT_PDF', iorder });
 }
@@ -213,6 +213,7 @@ function waitFor(fn, timeoutMs = 10000, poll = 100) {
     const orig = window.open;
     window.open = function(url, ...rest){
       if (url) {
+        labelLog.debug('window.open', { url });
         chrome.runtime.sendMessage({ type: 'PDF_CANDIDATE_URL', url, origin: 'window.open' });
       }
       return orig?.apply(this, [url, ...rest]);
@@ -303,7 +304,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   log.info('demo automation ready');
 
   const state = { processing: false, done: new Set(), tabActivated: false };
-  const cooldowns = new Map();
 
   document.addEventListener('click', (e) => {
     const demoBox = findDemoBox();
@@ -325,9 +325,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     const ordersBox = findOrdersBox();
     const orders = collectDemoOrderNos(demoBox).filter(o => !state.done.has(o));
     if (!orders.length) return;
-    logRate('found', `found OUT orders: [${orders.join(',')}]`);
     state.processing = true;
     for (const orderNo of orders){
+      labelLog.debug('found visible order from Demo table', { visibleOrder: orderNo });
       await handleOrder(orderNo, { demoBox, ordersBox });
       state.done.add(orderNo);
     }
@@ -366,7 +366,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       ttl -= delay;
       delay = Math.min(delay * 1.5, 1000);
     }
-    warnRate(`row-${orderNo}`, 'order row not found', { orderNo });
+    labelLog.dedup('order row not found', { orderNo }, 'warn');
     return null;
   }
 
@@ -375,43 +375,34 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     ensureOrdersTab(ctx);
     const row = await findOrderRow(orderNo);
     if (!row) return;
-    logRate(`open-${orderNo}`, `opening #${orderNo} in Orders`);
+    const link = row.querySelector('a[href*="iorder="]');
+    const iorder = /iorder=(\d+)/i.exec(link?.href || '')?.[1] || orderNo;
+    labelLog.debug('mapped to iorder', { visibleOrder: orderNo, iorder });
     safeClick(row, ctx);
+    labelLog.debug('opening order row', { iorder });
     const panel = await waitForElem(() => document.querySelector(SEL.orderPanelByNumber(orderNo)), 10000);
-    if (!panel){ warnRate(`panel-${orderNo}`, 'order panel not found', { orderNo }); return; }
+    if (!panel){ labelLog.dedup('order panel not found', { orderNo }, 'warn'); return; }
     await waitForElem(() => panel.querySelector('#Ord1, #TItems'), 10000);
 
     const optionsBtn = panel.querySelector(SEL.orderOptionsBtn);
     if (optionsBtn) safeClick(optionsBtn, ctx);
     await sleep(200); // allow dropdown to render
+    labelLog.debug('order options opened', { iorder });
 
     const labelLink = panel.querySelector(SEL.viewDemoLabel) ||
       panel.querySelector(SEL.viewRtnLabel) ||
       panel.querySelector(SEL.emailRtnLabel);
-    if (!labelLink){ warnRate(`label-${orderNo}`, 'label link missing', { orderNo }); return; }
+    if (!labelLink){ labelLog.dedup('label link missing', { iorder }, 'warn'); return; }
     safeClick(labelLink, ctx);
-    let msg = 'clicked View Demo Label';
-    if (labelLink.matches(SEL.viewRtnLabel)) msg = 'clicked View Return Label';
-    else if (labelLink.matches(SEL.emailRtnLabel)) msg = 'clicked Email Return Label';
-    logRate(`label-${orderNo}`, msg);
+    let action = 'View Demo Label';
+    if (labelLink.matches(SEL.viewRtnLabel)) action = 'View Return Label';
+    else if (labelLink.matches(SEL.emailRtnLabel)) action = 'Email Return Label';
+    labelLog.debug('clicked label', { action, iorder });
   }
 
   function sleep(ms){ return new Promise(res => setTimeout(res, ms)); }
 
   // Rate-limited warnings to avoid log spam
-  function warnRate(key, msg, data){
-    const now = Date.now();
-    if (cooldowns.get(key) > now) return;
-    cooldowns.set(key, now + 5000);
-    log.warn(msg, data);
-  }
-
-  function logRate(key, msg, data){
-    const now = Date.now();
-    if (cooldowns.get(key) > now) return;
-    cooldowns.set(key, now + 5000);
-    log.info(msg, data);
-  }
 
   // Utility: wait for selector or timeout
   function waitForElem(sel, timeout = 5000){

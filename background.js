@@ -2,7 +2,35 @@
 /* global PDFLib */
 
 importScripts('logger.js');
-const log = Logger.make('BG');
+const log = createLogger('HH:bg');
+const queueLog = createLogger('HH:queue');
+const labelLog = createLogger('HH:label');
+
+function applyPreset(preset){
+  chrome.storage.local.set(preset, () => {
+    const err = chrome.runtime.lastError;
+    if (err) log.error('applyPreset error', { error: err.message });
+    else log.info('preset applied', preset);
+  });
+}
+
+function setupMenus(){
+  try {
+    chrome.contextMenus.create({ id: 'preset-quiet', title: 'Quiet', contexts: ['action'] });
+    chrome.contextMenus.create({ id: 'preset-focus', title: 'Focus Label Debug', contexts: ['action'] });
+    chrome.contextMenus.create({ id: 'preset-trace', title: 'Full Trace', contexts: ['action'] });
+  } catch {}
+}
+
+chrome.contextMenus?.onClicked.addListener(info => {
+  if (info.menuItemId === 'preset-quiet') {
+    applyPreset({ logLevel:'warn', enableNamespaces:[], sampling:{}, rateLimit:{ windowMs:2000, maxPerWindow:20 } });
+  } else if (info.menuItemId === 'preset-focus') {
+    applyPreset({ logLevel:'debug', enableNamespaces:['HH:label'], sampling:{}, rateLimit:{ windowMs:2000, maxPerWindow:20 } });
+  } else if (info.menuItemId === 'preset-trace') {
+    applyPreset({ logLevel:'trace', enableNamespaces:['HH:*'], sampling:{ trace:0.2 }, rateLimit:{ windowMs:2000, maxPerWindow:20 } });
+  }
+});
 
 // Debug wrapper for runtime messaging to trace send/receive and timeouts.
 // Each context (background, content, popup) calls this to patch the default
@@ -149,7 +177,7 @@ function handlePdfCandidate(tabId, url, origin = ''){
   if (info) info.navigation = true;
   if (!url) return;
   if (looksLikePdf(url)) {
-    log.info(`PDF captured via: ${origin}`, { tabId, url });
+    labelLog.debug(`PDF captured via: ${origin}`, { tabId, iorder: info?.iorder || null, url });
     resolvePdfForTab(tabId, url);
   }
 }
@@ -161,7 +189,7 @@ chrome.webNavigation.onCreatedNavigationTarget.addListener(({tabId, sourceTabId,
   expecting.set(tabId, info);
   info.tabIds.add(tabId);
   if (looksLikePdf(url)) {
-    log.info('PDF captured via: onCreatedNavigationTarget', { url });
+    labelLog.debug('PDF captured via: onCreatedNavigationTarget', { url, iorder: info?.iorder || null });
     resolvePdfForTab(sourceTabId, url);
   }
 });
@@ -171,7 +199,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (!info) return;
   if (changeInfo.url) info.navigation = true;
   if (changeInfo.url && looksLikePdf(changeInfo.url)) {
-    log.info('PDF captured via: tabs.onUpdated', { url: changeInfo.url });
+    labelLog.debug('PDF captured via: tabs.onUpdated', { url: changeInfo.url, iorder: info?.iorder || null });
     resolvePdfForTab(tabId, changeInfo.url);
   }
 });
@@ -189,17 +217,17 @@ async function withLock(fn){
   const curr = await get(LOCK_KEY, { locked:false, ts:0 });
   // 15s stale window: prevents stuck locks from blocking forever
   if (curr.locked && (now - curr.ts) < 15000) {
-    log.info('withLock: already locked, skipping this cycle');
+    queueLog.trace('lock busy');
     return;
   }
-  log.info('withLock: acquiring'); // Trace lock attempts
+  queueLog.trace('lock acquiring');
   await set(LOCK_KEY, { locked:true, ts:now });
-  log.info('withLock: acquired'); // Confirm acquisition
+  queueLog.trace('lock acquired');
   try { await fn(); }
   catch (e) { log.error('withLock fn error', String(e)); }
   finally {
     await set(LOCK_KEY, { locked:false, ts:Date.now() });
-    log.info('withLock: released'); // Trace lock release
+    queueLog.trace('lock released');
   }
 }
 
@@ -244,18 +272,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 });
 
 chrome.runtime.onStartup.addListener(() => {
-  log.info('onStartup: kicking processor');
+  queueLog.trace('onStartup kick');
   runProcessor().catch(e => log.error('runProcessor onStartup error', String(e)));
 });
 chrome.runtime.onInstalled.addListener(() => {
-  log.info('onInstalled: kicking processor');
+  setupMenus();
+  applyPreset({ logLevel:'warn', enableNamespaces:[], sampling:{}, rateLimit:{ windowMs:2000, maxPerWindow:20 } });
+  queueLog.trace('onInstalled kick');
   runProcessor().catch(e => log.error('runProcessor onInstalled error', String(e)));
 });
 
 chrome.alarms.create('hh_job_heartbeat', { periodInMinutes: HEARTBEAT_MIN });
 chrome.alarms.onAlarm.addListener(a => {
   if (a.name === 'hh_job_heartbeat') {
-    log.info('heartbeat: kicking processor');
+    queueLog.trace('heartbeat');
     runProcessor().catch(e => log.error('runProcessor heartbeat error', String(e)));
   }
 });
@@ -266,14 +296,14 @@ chrome.alarms.onAlarm.addListener(a => {
 async function runProcessor(){
   await withLock(async () => {
     while (true) {
-      log.info('runProcessor: checking queue'); // Trace each loop iteration
+      queueLog.trace('checking queue');
       let jobs = await get(JOBS_KEY, []);
       const now = Date.now();
 
       // choose next eligible job
       const idx = jobs.findIndex(j => (j.status === 'pending' || j.status === 'retry') && (j.nextAt || 0) <= now);
       if (idx === -1) {
-        log.info('runProcessor: no eligible jobs');
+        queueLog.trace('no eligible jobs');
         break;
       }
 
@@ -281,7 +311,7 @@ async function runProcessor(){
       jobs[idx].status = 'processing';
       await set(JOBS_KEY, jobs);
 
-      log.info('Processing job', job);
+      queueLog.trace('processing job', job);
 
       try {
         await processJob(job);
@@ -290,7 +320,7 @@ async function runProcessor(){
         jobs = await get(JOBS_KEY, []);
         const pos = jobs.findIndex(j => j.jobId === job.jobId);
         if (pos > -1) { jobs.splice(pos, 1); await set(JOBS_KEY, jobs); }
-        log.info('Job completed', job.jobId);
+        queueLog.trace('job completed', { jobId: job.jobId });
 
         // notify (optional)
         try {
@@ -329,7 +359,7 @@ async function runProcessor(){
         (j.status === 'pending') || (j.status === 'retry' && (j.nextAt || 0) <= Date.now())
       );
       if (!more) {
-        log.info('Processor idle');
+        queueLog.trace('processor idle');
         break;
       }
       // Loop continues to process next job
@@ -347,7 +377,7 @@ async function processJob(job){
 
   // 1) Open account page in background
   const { id: tabId } = await chrome.tabs.create({ url: accountUrl, active: false });
-  log.info('Account tab opened', { tabId, accountUrl });
+  labelLog.debug('account tab opened', { tabId, accountUrl });
   await waitComplete(tabId);
 
   // 2) Find order row (matching visibleOrder if provided) and extract demo order
@@ -386,7 +416,7 @@ async function processJob(job){
     try { await chrome.tabs.remove(tabId); } catch {}
     throw new Error('No demo order found (O-row not present or structure changed)');
   }
-  log.info('Found demo order', { demoOrder, orderNumber: job.visibleOrder || null });
+  labelLog.debug('mapped to iorder', { visibleOrder: job.visibleOrder || null, iorder: demoOrder });
 
   // 3) Try to generate/capture PDF URL with retries/backoff
   const pdfUrl = await openLabelAndCapturePdf(tabId, demoOrder);
@@ -394,13 +424,13 @@ async function processJob(job){
     try { await chrome.tabs.remove(tabId); } catch {}
     throw new Error('No PDF URL captured (label click produced no PDF)');
   }
-  log.info('Captured PDF URL', { demoOrder, pdfUrl });
+  labelLog.debug('pdf url captured', { iorder: demoOrder, url: pdfUrl });
 
   // 4) Save to labels queue
   await pushLabel({ demoOrder, orderNumber: job.visibleOrder || null, url: pdfUrl });
 
   try { await chrome.tabs.remove(tabId); } catch {}
-  log.info('Closed account tab', { tabId });
+  queueLog.trace('account tab closed', { tabId });
 }
 
 function waitComplete(tabId){
@@ -408,7 +438,7 @@ function waitComplete(tabId){
     function onUpd(id, info){
       if (id === tabId && info.status === 'complete'){
         chrome.tabs.onUpdated.removeListener(onUpd);
-        log.info('Tab complete', { tabId });
+        queueLog.trace('tab complete', { tabId });
         resolve();
       }
     }
@@ -419,10 +449,18 @@ function waitComplete(tabId){
 async function openLabelAndCapturePdf(tabId, iorder){
   const delays = [1500, 3000, 6000, 10000, 15000];
   for (const delay of delays){
+    labelLog.debug('backoff attempt', { iorder, delayMs: delay });
     const result = await attemptOnce(tabId, iorder, delay);
-    if (result.url) return result.url;
-    if (result.navigation) return null; // navigation happened but no pdf
+    if (result.url) {
+      labelLog.debug('backoff success', { iorder, url: result.url });
+      return result.url;
+    }
+    if (result.navigation) {
+      labelLog.debug('navigation without pdf', { iorder });
+      return null; // navigation happened but no pdf
+    }
   }
+  labelLog.warn('backoff exhausted', { iorder });
   return null;
 }
 
@@ -495,10 +533,7 @@ async function printAllMerged(){
     await chrome.scripting.executeScript({
       target: { tabId }, world: 'MAIN',
       func: (url) => {
-        // Inline logging inside page to trace print timing
         try {
-          const stamp = () => new Date().toISOString();
-          console.log(stamp(), '[HH][PrintTab] injecting iframe for merged PDF');
           document.body.style.margin = '0';
           const iframe = document.createElement('iframe');
           iframe.style.width = '100vw';
@@ -507,13 +542,10 @@ async function printAllMerged(){
           iframe.src = url;
           document.body.appendChild(iframe);
           iframe.onload = () => {
-            console.log(stamp(), '[HH][PrintTab] iframe loaded; calling print()');
             iframe.contentWindow.focus();
             iframe.contentWindow.print();
           };
-        } catch (e) {
-          console.error('[HH][PrintTab] print script error', e);
-        }
+        } catch {}
       },
       args: [blobUrl]
     });

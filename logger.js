@@ -1,82 +1,102 @@
-const Logger = (() => {
-  const lvl = { error:0, warn:1, info:2, debug:3, trace:4 };
-  const global = typeof self !== 'undefined' ? self : window;
-  let level = (() => {
-    const env = (global.HH_DEBUG_LEVEL ?? 'info').toString().toLowerCase();
-    return lvl[env] ?? 2;
-  })();
-  let sample = Number(global.HH_DEBUG_SAMPLING ?? 1);
-  const last = new Map();     // key -> { t:ms, count:n }
-  const SUM_INTERVAL = 30000; // 30s
-  let sumTimer = null;
+(function(global){
+  const LEVELS = { error:0, warn:1, info:2, debug:3, trace:4 };
+  const DEFAULT = {
+    logLevel: 'warn',
+    enableNamespaces: [],
+    sampling: {},
+    rateLimit: { windowMs: 0, maxPerWindow: Infinity }
+  };
+  let settings = null;
+  let fetchedAt = 0;
+  const CACHE_MS = 2000;
+  const rate = { start:0, count:0 };
 
-  function shouldLog(k, minGapMs=5000) {
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && (changes.logLevel || changes.enableNamespaces || changes.sampling || changes.rateLimit)) {
+      fetchedAt = 0;
+    }
+  });
+
+  async function loadSettings(){
     const now = Date.now();
-    const rec = last.get(k);
-    if (!rec || now - rec.t >= minGapMs) {
-      last.set(k, { t: now, count: 0 });
-      return true;
+    if (settings && (now - fetchedAt) < CACHE_MS) return settings;
+    try {
+      const obj = await chrome.storage.local.get(['logLevel','enableNamespaces','sampling','rateLimit']);
+      settings = Object.assign({}, DEFAULT, obj);
+    } catch {
+      settings = Object.assign({}, DEFAULT);
     }
-    rec.count++;
-    return false;
+    fetchedAt = now;
+    return settings;
   }
 
-  function summaryFlush() {
-    if (!last.size) return;
-    const lines = [];
-    for (const [k, rec] of last.entries()) {
-      if (rec.count > 0) lines.push(`${k} x${rec.count}`);
-    }
-    if (lines.length) console.info('[HH][Summary]', lines.join(' · '));
-    // reset only counts; keep timestamps to preserve rate-limit windows
-    for (const rec of last.values()) rec.count = 0;
+  function nsEnabled(ns, enabled){
+    if (!Array.isArray(enabled) || !enabled.length) return false;
+    return enabled.some(p => {
+      if (p.endsWith('*')) return ns.startsWith(p.slice(0,-1));
+      return ns === p;
+    });
   }
-  function scheduleSummary() {
-    if (sumTimer) return;
-    sumTimer = setInterval(summaryFlush, SUM_INTERVAL);
-    if (typeof addEventListener === 'function') {
-      addEventListener('visibilitychange', () => { if (typeof document !== 'undefined' && document.hidden) summaryFlush(); });
-      addEventListener('beforeunload', summaryFlush);
-      addEventListener('pagehide', summaryFlush);
-    }
-  }
-  scheduleSummary();
 
-  function make(scope='Content') {
-    const tag = `[HH][${scope}]`;
-    const logf = (lvlName, gap, ...a) => {
-      if (lvl[lvlName] > level) return;
-      if ((lvlName === 'debug' || lvlName === 'trace') && Math.random() > sample) return;
-      const k = `${tag} ${a[0]}`; // first arg is message key
-      const first = shouldLog(k, gap);
-      if (!first) return;
-      if (lvlName === 'error') {
-        console.error(tag, ...a, new Error().stack);
-      } else {
-        console[lvlName](tag, ...a);
+  function emit(level, ns, msg, ctx){
+    loadSettings().then(cfg => {
+      const lvlNum = LEVELS[level];
+      const minLvl = LEVELS[cfg.logLevel] ?? LEVELS.warn;
+      if (lvlNum < minLvl) return;
+      if (lvlNum < LEVELS.warn && !nsEnabled(ns, cfg.enableNamespaces)) return;
+      const prob = cfg.sampling && typeof cfg.sampling[level] === 'number' ? cfg.sampling[level] : 1;
+      if (prob < 1 && Math.random() > prob) return;
+      const now = Date.now();
+      const rl = cfg.rateLimit || {};
+      const w = rl.windowMs || 0;
+      const max = rl.maxPerWindow ?? Infinity;
+      if (w > 0 && max < Infinity){
+        if (now - rate.start > w){ rate.start = now; rate.count = 0; }
+        if (rate.count >= max) return;
+        rate.count++;
       }
-    };
-    return {
-      setLevel: (name) => { level = lvl[name] ?? level; },
-      error: (...a) => logf('error', Number.POSITIVE_INFINITY, ...a),
-      warn:  (...a) => logf('warn',  2000, ...a),
-      info:  (...a) => logf('info',  3000, ...a),
-      debug: (...a) => logf('debug', 5000, ...a),
-      trace: (...a) => logf('trace', 7000, ...a),
-      step: async (name, fn) => {
-        const t0 = performance.now();
-        try {
-          const r = await fn();
-          console.info(`${tag} ▶ ${name} ok ${(performance.now()-t0).toFixed(0)}ms`);
-          return r;
-        } catch (e) {
-          console.error(`${tag} ✗ ${name}`, e);
-          throw e;
+      const ts = new Date(now).toISOString();
+      const payload = ctx ? ' ' + JSON.stringify(ctx) : '';
+      const line = `${ts} [${ns}] ${level} ${msg}${payload}`;
+      const fn = console[level] || console.log;
+      fn(line);
+    });
+  }
+
+  function createLogger(ns){
+    const state = { lastMsg:'', lastCtx:null, lastEmit:0, suppressed:0 };
+    function dedup(level, msg, ctx){
+      const now = Date.now();
+      if (msg === state.lastMsg){
+        if (now - state.lastEmit >= 10000){
+          const sup = state.suppressed;
+          state.suppressed = 0;
+          state.lastEmit = now;
+          state.lastCtx = ctx;
+          emit(level, ns, `${msg} (suppressed ${sup})`, ctx);
+        } else {
+          state.suppressed++;
         }
+        return;
       }
+      if (state.suppressed > 0){
+        emit(level, ns, `${state.lastMsg} (suppressed ${state.suppressed})`, state.lastCtx);
+      }
+      state.lastMsg = msg;
+      state.lastCtx = ctx;
+      state.suppressed = 0;
+      state.lastEmit = now;
+      emit(level, ns, msg, ctx);
+    }
+    return {
+      trace:(m,c)=>emit('trace',ns,m,c),
+      debug:(m,c)=>emit('debug',ns,m,c),
+      info:(m,c)=>emit('info',ns,m,c),
+      warn:(m,c)=>emit('warn',ns,m,c),
+      error:(m,c)=>emit('error',ns,m,c),
+      dedup:(m,c,l='info')=>dedup(l,m,c)
     };
   }
-  return { make, summaryFlush };
-})();
 
-if (typeof self !== 'undefined') self.Logger = Logger;
+  global.createLogger = createLogger;
+})(typeof self !== 'undefined' ? self : window);
