@@ -11,7 +11,8 @@
     "tabs",
     "webNavigation",
     "alarms",
-    "notifications"
+    "notifications",
+    "contextMenus"
   ],
 
   /* Host permissions: limit to your domain */
@@ -35,5 +36,7 @@
   "action": {
     "default_title": "Label Queue",
     "default_popup": "popup.html"
-  }
+  },
+
+  "options_page": "options.html"
 }
