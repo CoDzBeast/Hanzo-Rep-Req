@@ -419,7 +419,7 @@ async function processJob(job){
   labelLog.debug('mapped to iorder', { visibleOrder: job.visibleOrder || null, iorder: demoOrder });
 
   // 3) Try to generate/capture PDF URL with retries/backoff
-  const pdfUrl = await openLabelAndCapturePdf(tabId, demoOrder);
+  const pdfUrl = await openLabelAndCapturePdf(tabId, demoOrder, job.visibleOrder || null);
   if (!pdfUrl) {
     try { await chrome.tabs.remove(tabId); } catch {}
     throw new Error('No PDF URL captured (label click produced no PDF)');
@@ -446,11 +446,11 @@ function waitComplete(tabId){
   });
 }
 
-async function openLabelAndCapturePdf(tabId, iorder){
+async function openLabelAndCapturePdf(tabId, iorder, visibleOrder){
   const delays = [1500, 3000, 6000, 10000, 15000];
   for (const delay of delays){
-    labelLog.debug('backoff attempt', { iorder, delayMs: delay });
-    const result = await attemptOnce(tabId, iorder, delay);
+    labelLog.debug('backoff attempt', { iorder, visibleOrder, delayMs: delay });
+    const result = await attemptOnce(tabId, iorder, visibleOrder, delay);
     if (result.url) {
       labelLog.debug('backoff success', { iorder, url: result.url });
       return result.url;
@@ -464,14 +464,14 @@ async function openLabelAndCapturePdf(tabId, iorder){
   return null;
 }
 
-function attemptOnce(tabId, iorder, delay){
+function attemptOnce(tabId, iorder, visibleOrder, delay){
   return new Promise(async resolve => {
     const info = { until: Date.now() + delay, iorder, navigation: false, tabIds: new Set([tabId]) };
     info.resolve = (res) => { clearTimeout(timer); cleanup(); resolve(res); };
     function cleanup(){ for (const id of info.tabIds) expecting.delete(id); }
     expecting.set(tabId, info);
     try {
-      await chrome.tabs.sendMessage(tabId, { type: 'OPEN_ORDER_AND_CLICK_LABEL', iorder });
+      await chrome.tabs.sendMessage(tabId, { type: 'OPEN_ORDER_AND_CLICK_LABEL', iorder, visibleOrder });
     } catch (e) {
       cleanup();
       resolve({ url: null, navigation: true });
