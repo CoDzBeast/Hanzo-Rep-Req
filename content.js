@@ -196,12 +196,23 @@ async function openOrderAndClickLabel(iorder, visibleOrder) {
     ['iOrder','currentOrder','selOrder','OrderID','orderId','order','order_id'].forEach(n=>ensure(n, actualIorder));
   }
 
-  labelLog.debug('calling viewDemoLabel', { iorder: actualIorder });
-  if (typeof window.viewDemoLabel === 'function') {
-    window.viewDemoLabel();
-  } else {
-    throw new Error('viewDemoLabel() missing');
+  const labelFns = [
+    ['View Demo Label', 'viewDemoLabel'],
+    ['View Return Label', 'viewReturnLabel'],
+    ['Email Return Label', 'sendReturnLabel']
+  ];
+  let invoked = false;
+  for (const [action, fn] of labelFns) {
+    if (typeof window[fn] === 'function') {
+      labelLog.debug('calling label function', { action, iorder: actualIorder });
+      try { window[fn](); } catch (e) {
+        throw new Error(`${fn}() threw: ${e}`);
+      }
+      invoked = true;
+      break;
+    }
   }
+  if (!invoked) throw new Error('No label function available');
 
   chrome.runtime.sendMessage({ type: 'EXPECT_PDF', iorder: actualIorder });
 }
@@ -423,11 +434,24 @@ function waitFor(fn, timeoutMs = 10000, poll = 100) {
       ['iOrder','currentOrder','selOrder','OrderID','orderId','order','order_id'].forEach(n=>ensure(n,iorder));
     }
 
-    labelLog.debug('calling viewDemoLabel', { iorder });
-    if (typeof window.viewDemoLabel === 'function') {
-      window.viewDemoLabel();
-    } else {
-      labelLog.dedup('viewDemoLabel missing', { iorder }, 'warn');
+    const labelFns = [
+      ['View Demo Label', 'viewDemoLabel'],
+      ['View Return Label', 'viewReturnLabel'],
+      ['Email Return Label', 'sendReturnLabel']
+    ];
+    let invoked = false;
+    for (const [action, fn] of labelFns) {
+      if (typeof window[fn] === 'function') {
+        labelLog.debug('calling label function', { action, iorder });
+        try { window[fn](); } catch (e) {
+          labelLog.error('label function threw', { action, error: String(e) });
+        }
+        invoked = true;
+        break;
+      }
+    }
+    if (!invoked) {
+      labelLog.dedup('label function missing', { iorder }, 'warn');
     }
   }
 
