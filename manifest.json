@@ -4,7 +4,6 @@
   "version": "1.0.1",
   "manifest_version": 3,
 
-  /* Permissions: keep minimal but sufficient */
   "permissions": [
     "storage",
     "scripting",
@@ -14,8 +13,6 @@
     "notifications",
     "contextMenus"
   ],
-
-  /* Host permissions: limit to your domain */
   "host_permissions": [
     "https://www.hattorihanzoshears.com/*"
   ],
@@ -29,7 +26,6 @@
   ],
 
   "background": {
-    /* Classic service worker (not module) so we can importScripts(pdf-lib) */
     "service_worker": "background.js"
   },
 

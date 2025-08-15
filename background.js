@@ -6,6 +6,9 @@ const log = createLogger('HH:bg');
 const queueLog = createLogger('HH:queue');
 const labelLog = createLogger('HH:label');
 
+// 1x1 transparent PNG as data URL to avoid binary icons in repo
+const NOTIF_ICON = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/38HAAMBAQAYwF8RAAAAAElFTkSuQmCC';
+
 function applyPreset(preset){
   chrome.storage.local.set(preset, () => {
     const err = chrome.runtime.lastError;
@@ -324,12 +327,19 @@ async function runProcessor(){
 
         // notify (optional)
         try {
-          chrome.notifications.create(undefined, {
+          const opts = {
             type: 'basic',
+            iconUrl: NOTIF_ICON,
             title: 'Label queued',
             message: `Order ${job.visibleOrder || ''} added`
+          };
+          chrome.notifications.create(opts, () => {
+            const err = chrome.runtime.lastError;
+            if (err) queueLog.warn('notification failed', err.message);
           });
-        } catch {}
+        } catch (e) {
+          queueLog.warn('notification exception', String(e));
+        }
       } catch (err) {
         const reason = (err && err.message) ? err.message : String(err);
         log.warn('Job failed', { jobId: job.jobId, reason });
