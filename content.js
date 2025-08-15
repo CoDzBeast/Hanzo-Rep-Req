@@ -15,10 +15,6 @@ const SEL = {
   accordion: '#accordion',
   orderRowMatcher: (n) => `#accordion .rwOrdr`, // we'll filter by textContent includes `#${n}`
   orderPanelByNumber: (n) => `#O${n}`,
-  orderOptionsBtn: '.btn.btn-warning.dropdown-toggle',
-  viewDemoLabel: 'a[onclick="viewDemoLabel();"]',
-  viewRtnLabel:  'a[onclick="viewReturnLabel();"]',
-  emailRtnLabel: 'a[onclick="sendReturnLabel();"]',
 };
 
 // DO NOT USE: element.click() — always use safeClick
@@ -179,26 +175,35 @@ async function openOrderAndClickLabel(iorder, visibleOrder) {
   await waitFor(() => document.querySelector(panelSel), 12000, 200);
 
   const panel = document.querySelector(panelSel);
-  const optsBtn = panel?.querySelector('.btn.btn-warning.dropdown-toggle');
-  if (!optsBtn) throw new Error('Order Options button not found');
-  optsBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-  labelLog.debug('order options opened', { iorder: actualIorder });
+  if (!panel) throw new Error('Order panel not found');
 
-  const trySel = [
-    'a[onclick="viewDemoLabel();"]',
-    'a[onclick="viewReturnLabel();"]',
-    'a[onclick="sendReturnLabel();"]'
-  ];
-  const menuLink = trySel.map(s => panel.querySelector(s)).find(Boolean);
-  if (!menuLink) throw new Error('No label action found in menu');
-  menuLink.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+  // Ensure environment expected by viewDemoLabel()
+  try { window.cTrn = 'O'; } catch {}
+  try {
+    const cTr = document.querySelector('#cTr');
+    if (cTr) cTr.innerHTML = 'O';
+    if (window.jQuery && window.$) { try { $('#cTr').html('O'); } catch {} }
+  } catch {}
 
-    let action = 'View Demo Label';
-    if (menuLink.matches('a[onclick="viewReturnLabel();"]')) action = 'View Return Label';
-    else if (menuLink.matches('a[onclick="sendReturnLabel();"]')) action = 'Email Return Label';
-    labelLog.debug('clicked label', { action, iorder: actualIorder });
+  try { window.iOrder = actualIorder; } catch {}
 
-    chrome.runtime.sendMessage({ type: 'EXPECT_PDF', iorder: actualIorder });
+  const form = panel.querySelector('form');
+  if (form) {
+    const ensure = (n,v) => { let el=form.querySelector(`input[name="${n}"]`)||form.querySelector('#'+CSS.escape(n));
+      if (!el) { el=document.createElement('input'); el.type='hidden'; el.name=n; el.id=n; form.appendChild(el); }
+      el.value=String(v);
+    };
+    ['iOrder','currentOrder','selOrder','OrderID','orderId','order','order_id'].forEach(n=>ensure(n, actualIorder));
+  }
+
+  labelLog.debug('calling viewDemoLabel', { iorder: actualIorder });
+  if (typeof window.viewDemoLabel === 'function') {
+    window.viewDemoLabel();
+  } else {
+    throw new Error('viewDemoLabel() missing');
+  }
+
+  chrome.runtime.sendMessage({ type: 'EXPECT_PDF', iorder: actualIorder });
 }
 
 function waitFor(fn, timeoutMs = 10000, poll = 100) {
@@ -399,20 +404,31 @@ function waitFor(fn, timeoutMs = 10000, poll = 100) {
     if (!panel){ labelLog.dedup('order panel not found', { orderNo }, 'warn'); return; }
     await waitForElem(() => panel.querySelector('#Ord1, #TItems'), 10000);
 
-    const optionsBtn = panel.querySelector(SEL.orderOptionsBtn);
-    if (optionsBtn) safeClick(optionsBtn, ctx);
-    await sleep(200); // allow dropdown to render
-    labelLog.debug('order options opened', { iorder });
+    // Prepare environment and call viewDemoLabel directly
+    try { window.cTrn = 'O'; } catch {}
+    try {
+      const cTr = document.querySelector('#cTr');
+      if (cTr) cTr.innerHTML = 'O';
+      if (window.jQuery && window.$) { try { $('#cTr').html('O'); } catch {} }
+    } catch {}
 
-    const labelLink = panel.querySelector(SEL.viewDemoLabel) ||
-      panel.querySelector(SEL.viewRtnLabel) ||
-      panel.querySelector(SEL.emailRtnLabel);
-    if (!labelLink){ labelLog.dedup('label link missing', { iorder }, 'warn'); return; }
-    safeClick(labelLink, ctx);
-    let action = 'View Demo Label';
-    if (labelLink.matches(SEL.viewRtnLabel)) action = 'View Return Label';
-    else if (labelLink.matches(SEL.emailRtnLabel)) action = 'Email Return Label';
-    labelLog.debug('clicked label', { action, iorder });
+    try { window.iOrder = iorder; } catch {}
+
+    const form = panel.querySelector('form');
+    if (form) {
+      const ensure = (n,v)=>{ let el=form.querySelector(`input[name="${n}"]`)||form.querySelector('#'+CSS.escape(n));
+        if (!el){ el=document.createElement('input'); el.type='hidden'; el.name=n; el.id=n; form.appendChild(el); }
+        el.value=String(v);
+      };
+      ['iOrder','currentOrder','selOrder','OrderID','orderId','order','order_id'].forEach(n=>ensure(n,iorder));
+    }
+
+    labelLog.debug('calling viewDemoLabel', { iorder });
+    if (typeof window.viewDemoLabel === 'function') {
+      window.viewDemoLabel();
+    } else {
+      labelLog.dedup('viewDemoLabel missing', { iorder }, 'warn');
+    }
   }
 
   function sleep(ms){ return new Promise(res => setTimeout(res, ms)); }
