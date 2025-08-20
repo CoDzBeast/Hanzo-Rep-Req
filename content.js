@@ -391,7 +391,13 @@ function waitFor(fn, timeoutMs = 10000, poll = 100) {
     let ttl = 60000, delay = 200;
     while (ttl > 0){
       const rows = Array.from(document.querySelectorAll(SEL.orderRowMatcher(orderNo)));
-      const row = rows.find(r => (r.textContent || '').includes(`#${orderNo}`));
+      const row = rows.find(r => {
+        const txt = r.textContent || '';
+        if (!txt.includes(`#${orderNo}`)) return false;
+        // Only match outbound demo rows where the status column is "O"
+        const status = (r.querySelector('td:nth-child(1)')?.textContent || '').trim().toUpperCase();
+        return status === 'O';
+      });
       if (row) return row;
       await sleep(delay);
       ttl -= delay;
