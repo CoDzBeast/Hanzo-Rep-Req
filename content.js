@@ -177,10 +177,12 @@ async function openOrderAndClickLabel(iorder, visibleOrder) {
   }
   labelLog.debug('opening order row', { iorder: actualIorder, visibleOrder });
   const panelSel = `#O${actualIorder}`;
+  labelLog.debug('waiting for panel', { selector: panelSel });
   await waitFor(() => document.querySelector(panelSel), 12000, 200);
 
   const panel = document.querySelector(panelSel);
   if (!panel) throw new Error('Order panel not found');
+  labelLog.debug('panel found', { selector: panelSel, innerHTMLLen: (panel.innerHTML || '').length });
 
   // Ensure environment expected by viewDemoLabel()
   try { window.cTrn = 'O'; } catch {}
@@ -270,20 +272,19 @@ async function openOrderAndClickLabel(iorder, visibleOrder) {
       ['Email Return Label', 'sendReturnLabel']
     ];
     for (const [action, fn] of labelFns) {
-      if (typeof window[fn] === 'function') {
-        labelLog.debug('calling label function', { action, iorder: actualIorder });
-        try { window[fn](); } catch (e) {
-          throw new Error(`${fn}() threw: ${e}`);
+        if (typeof window[fn] === 'function') {
+          labelLog.debug('calling label function', { action, iorder: actualIorder });
+          try { window[fn](); } catch (e) {
+            throw new Error(`${fn}() threw: ${e}`);
+          }
+          invoked = true;
+          break;
         }
-        invoked = true;
-        break;
       }
+      if (!invoked) throw new Error('No label function available');
     }
-    if (!invoked) throw new Error('No label function available');
+    labelLog.debug('label action invoked', { iorder: actualIorder, invoked });
   }
-
-  chrome.runtime.sendMessage({ type: 'EXPECT_PDF', iorder: actualIorder });
-}
 
 function waitFor(fn, timeoutMs = 10000, poll = 100) {
   return new Promise((res, rej) => {
