@@ -271,18 +271,28 @@ async function openOrderAndClickLabel(iorder, visibleOrder) {
 
   let navigated = false;
   try {
-    await waitFor(() => /DemoLabel\.cfm/i.test(location.href), 1500, 100);
+    await waitFor(() => /shippingLabelDemo\.cfm/i.test(location.href) || /DemoLabel\.cfm/i.test(location.href), 1500, 100);
     navigated = true;
   } catch {}
 
   if (!navigated) {
-    const url = `${location.origin}/cgi-bin/DemoLabel.cfm?iOrder=${encodeURIComponent(actualIorder)}&cTrn=O`;
-    labelLog.debug('direct nav to label', { url, iorder: actualIorder });
-    if (window.chrome?.tabs) {
-      chrome.tabs.create({ url, active:false }, tab => labelLog.debug('label tab created', { tabId: tab.id, url }));
-    } else {
-      window.open(url, '_blank');
+    try {
+      if (typeof window.viewDemoLabel === 'function') {
+        const before = location.href;
+        window.viewDemoLabel();
+        const after = location.href;
+        if (after !== before && /shippingLabelDemo\.cfm/i.test(after)) {
+          window.open(after, '_blank', 'noopener');
+          try { history.replaceState(null, '', before); } catch {}
+        }
+        navigated = true;
+      }
+    } catch (e) {
+      labelLog.warn('viewDemoLabel fallback failed', { iorder: actualIorder, error: String(e) });
     }
+  }
+  if (!navigated) {
+    labelLog.warn('demo label navigation failed', { iorder: actualIorder });
   }
 
   chrome.runtime.sendMessage({ type: 'EXPECT_PDF', iorder: actualIorder });
