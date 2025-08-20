@@ -2,12 +2,12 @@
 /* global PDFLib */
 
 importScripts(chrome.runtime.getURL('logger.js'));
+importScripts('src/config.js');
+importScripts('src/eventBus.global.js');
 const log = createLogger('HH:bg');
 const queueLog = createLogger('HH:queue');
 const labelLog = createLogger('HH:label');
-
-// 1x1 transparent PNG as data URL to avoid binary icons in repo
-const NOTIF_ICON = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/38HAAMBAQAYwF8RAAAAAElFTkSuQmCC';
+const eventBus = new EventBus();
 
 function applyPreset(preset){
   chrome.storage.local.set(preset, () => {
@@ -112,15 +112,8 @@ try {
   log.error('importScripts pdf-lib.min.js failed', String(e));
 }
 
-const ORIGIN = 'https://www.hattorihanzoshears.com';
-
-// Storage keys
-const JOBS_KEY   = 'hh_jobs_v1';   // [{jobId, accountUrl, visibleOrder, status, tries, nextAt, createdAt}]
-const LABELS_KEY = 'hh_labels_v1'; // [{demoOrder, url, orderNumber}]
-const LOCK_KEY   = 'hh_jobs_lock_v1';
-
-const MAX_TRIES = 3;
-const HEARTBEAT_MIN = 0.25; // 15s
+// Configuration constants loaded from src/config.js
+const { ORIGIN, NOTIF_ICON, JOBS_KEY, LABELS_KEY, LOCK_KEY, MAX_TRIES, HEARTBEAT_MIN } = CONFIG;
 
 // Queue processing is disabled until the user queues a job via "Ship It!".
 // This prevents any stored jobs from auto-running when the extension starts.
@@ -150,16 +143,23 @@ async function set(key, val){
 }
 
 // ---------- Job enqueue / labels ----------
-async function enqueueJob(job){
-  log.info('enqueueJob', job);
-  const jobs = await get(JOBS_KEY, []);
-  jobs.push({ ...job, status: 'pending', tries: 0, nextAt: 0 });
-  await set(JOBS_KEY, jobs);
-  // Kick the processor without awaiting so we can respond to the sender
-  // immediately. Any errors are logged.
-  processingEnabled = true;
-  runProcessor().catch(e => log.error('runProcessor enqueue error', String(e)));
+function createJobManager(config, bus){
+  async function enqueueJob(job){
+    log.info('enqueueJob', job);
+    const jobs = await get(config.JOBS_KEY, []);
+    jobs.push({ ...job, status: 'pending', tries: 0, nextAt: 0 });
+    await set(config.JOBS_KEY, jobs);
+    // Kick the processor without awaiting so we can respond to the sender
+    // immediately. Any errors are logged.
+    processingEnabled = true;
+    bus.emit('jobQueued', job);
+    runProcessor().catch(e => log.error('runProcessor enqueue error', String(e)));
+  }
+  return { enqueueJob };
 }
+
+const { enqueueJob } = createJobManager(CONFIG, eventBus);
+eventBus.on('jobQueued', job => queueLog.debug('jobQueued', job));
 
 async function pushLabel(item){
   log.info('pushLabel', item);
