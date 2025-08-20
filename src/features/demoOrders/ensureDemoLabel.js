@@ -119,10 +119,21 @@ function callViewDemoLabel(orderNum, details){
       const btn = details.querySelector('.btn-group .dropdown-toggle');
       if (btn) {
         btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-        const menuItem = details.querySelector('li[data-demoaction] a[onclick*="viewDemoLabel"], li[data-demoaction] a[href*="viewDemoLabel"]');
+        const menuItem = details.querySelector(
+          'li[data-demoaction] a[onclick*="viewDemoLabel"], '
+          + 'li[data-demoaction] a[href*="viewDemoLabel"], '
+          + 'a[onclick*="viewDemoLabel"], a[href*="viewDemoLabel"]'
+        );
         if (menuItem) {
           DemoLog.info('Clicking View Demo Label via menu');
           menuItem.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+          const href = (menuItem.getAttribute('href') || '').toLowerCase();
+          const hasOnClick = menuItem.hasAttribute('onclick');
+          if ((href.startsWith('javascript:') || !hasOnClick) && typeof window.viewDemoLabel === 'function') {
+            try { window.viewDemoLabel(); } catch (e) {
+              DemoLog.warn('manual viewDemoLabel failed', e);
+            }
+          }
           viaMenu = true;
         }
       }
