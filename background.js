@@ -407,7 +407,7 @@ async function processJob(job){
   await waitComplete(tabId);
 
   // 2) Find order row (matching visibleOrder if provided) and extract demo order
-  const [{ result: demoOrder }] = await chrome.scripting.executeScript({
+  const [{ result: map }] = await chrome.scripting.executeScript({
     target: { tabId }, world: 'MAIN',
     func: (visibleOrder) => {
       function getIOrder(href){
@@ -433,27 +433,56 @@ async function processJob(job){
       }
       if (!cand) return null;
       const a = cand.querySelector('a[href*="my_inventory.cfm"][href*="iorder="]');
-      return getIOrder(a?.getAttribute('href'));
+      const iorder = getIOrder(a?.getAttribute('href'));
+      return {
+        iorder,
+        panelId: cand.id || null,
+        onclick: a?.getAttribute('onclick') || null
+      };
     },
     args: [job.visibleOrder || null]
   });
 
-  if (!demoOrder) {
+  if (!map || !map.iorder) {
     try { await chrome.tabs.remove(tabId); } catch {}
     throw new Error('No demo order found (O-row not present or structure changed)');
   }
-  labelLog.debug('mapped to iorder', { visibleOrder: job.visibleOrder || null, iorder: demoOrder });
+  labelLog.debug('mapped to iorder', { visibleOrder: job.visibleOrder || null, iorder: map.iorder, panelId: map.panelId, onclick: map.onclick });
 
-  // 3) Try to generate/capture PDF URL with retries/backoff
-  const pdfUrl = await openLabelAndCapturePdf(tabId, demoOrder, job.visibleOrder || null);
+  // 3) Verify the order panel exists and prime guards
+  const [{ result: panelInfo }] = await chrome.scripting.executeScript({
+    target: { tabId }, world: 'MAIN',
+    func: (iorder) => {
+      const sel = `#O${iorder}`;
+      const panel = document.querySelector(sel);
+      return { sel, exists: !!panel, innerHTMLLen: panel ? (panel.innerHTML || '').length : 0 };
+    },
+    args: [map.iorder]
+  });
+  labelLog.debug('panel check', { iorder: map.iorder, ...panelInfo });
+
+  await chrome.scripting.executeScript({
+    target: { tabId }, world: 'MAIN',
+    func: (iorder) => {
+      try { window.cTrn = 'O'; } catch {}
+      try { window.iOrder = iorder; } catch {}
+      return { cTrn: window.cTrn || null, iOrder: window.iOrder || null };
+    },
+    args: [map.iorder]
+  }).then(([{ result }]) => {
+    labelLog.debug('guards set', { iorder: map.iorder, cTrn: result.cTrn, iOrder: result.iOrder });
+  }).catch(() => {});
+
+  // 4) Open label directly and capture PDF URL
+  const pdfUrl = await openLabelAndCapturePdf(map.iorder);
   if (!pdfUrl) {
     try { await chrome.tabs.remove(tabId); } catch {}
-    throw new Error('No PDF URL captured (label click produced no PDF)');
+    throw new Error('No PDF URL captured (label open produced no PDF)');
   }
-  labelLog.debug('pdf url captured', { iorder: demoOrder, url: pdfUrl });
+  labelLog.debug('pdf url captured', { iorder: map.iorder, url: pdfUrl });
 
   // 4) Save to labels queue
-  await pushLabel({ demoOrder, orderNumber: job.visibleOrder || null, url: pdfUrl });
+  await pushLabel({ demoOrder: map.iorder, orderNumber: job.visibleOrder || null, url: pdfUrl });
 
   try { await chrome.tabs.remove(tabId); } catch {}
   queueLog.trace('account tab closed', { tabId });
@@ -472,38 +501,24 @@ function waitComplete(tabId){
   });
 }
 
-async function openLabelAndCapturePdf(tabId, iorder, visibleOrder){
-  const delays = [1500, 3000, 6000, 10000, 15000];
-  for (const delay of delays){
-    labelLog.debug('backoff attempt', { iorder, visibleOrder, delayMs: delay });
-    const result = await attemptOnce(tabId, iorder, visibleOrder, delay);
-    if (result.url) {
-      labelLog.debug('backoff success', { iorder, url: result.url });
-      return result.url;
-    }
-    if (result.navigation) {
-      labelLog.debug('navigation without pdf', { iorder });
-      return null; // navigation happened but no pdf
-    }
-  }
-  labelLog.warn('backoff exhausted', { iorder });
-  return null;
-}
-
-function attemptOnce(tabId, iorder, visibleOrder, delay){
-  return new Promise(async resolve => {
-    const info = { until: Date.now() + delay, iorder, navigation: false, tabIds: new Set([tabId]) };
-    info.resolve = (res) => { clearTimeout(timer); cleanup(); resolve(res); };
-    function cleanup(){ for (const id of info.tabIds) expecting.delete(id); }
+async function openLabelAndCapturePdf(iorder){
+  const url = `${ORIGIN}/cgi-bin/DemoLabel.cfm?iOrder=${encodeURIComponent(iorder)}&cTrn=O`;
+  labelLog.debug('opening label url', { iorder, url });
+  const { id: tabId } = await chrome.tabs.create({ url, active: false });
+  labelLog.debug('label tab created', { tabId, url });
+  return await new Promise(resolve => {
+    const info = { until: Date.now() + 20000, iorder, navigation: true, tabIds: new Set([tabId]) };
+    const timer = setTimeout(() => {
+      for (const id of info.tabIds) expecting.delete(id);
+      resolve(null);
+    }, 20000);
+    info.resolve = (res) => {
+      clearTimeout(timer);
+      for (const id of info.tabIds) expecting.delete(id);
+      resolve(res.url || null);
+    };
     expecting.set(tabId, info);
-    try {
-      await chrome.tabs.sendMessage(tabId, { type: 'OPEN_ORDER_AND_CLICK_LABEL', iorder, visibleOrder });
-    } catch (e) {
-      cleanup();
-      resolve({ url: null, navigation: true });
-      return;
-    }
-    const timer = setTimeout(() => { cleanup(); resolve({ url: null, navigation: info.navigation }); }, delay);
+    labelLog.debug('EXPECT_PDF after navigation', { iorder, tabId });
   });
 }
 
