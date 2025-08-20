@@ -154,11 +154,11 @@ async function openOrderAndClickLabel(iorder, visibleOrder) {
 
   const rows = [...accordion.querySelectorAll('.rwOrdr')];
   let row = null;
-  if (visibleOrder) {
-    row = rows.find(r => (r.textContent || '').includes(`#${visibleOrder}`));
-  }
-  if (!row && iorder) {
+  if (iorder) {
     row = rows.find(r => (r.textContent || '').includes(`#${iorder}`) || r.querySelector(`a[href*="iorder=${iorder}"]`));
+  }
+  if (!row && visibleOrder) {
+    row = rows.find(r => (r.textContent || '').includes(`#${visibleOrder}`));
   }
   if (!row) throw new Error(`Order row not found for iorder=${iorder} visibleOrder=${visibleOrder}`);
 
