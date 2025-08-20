@@ -74,7 +74,7 @@ async function openOrder(orderNum){
         err.code = DemoErr.ROW_CLICK_MISSING;
         throw err;
       }
-      rw.click();
+      rw.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
     }
 
     await waitFor(()=> String(window.iOrder) === String(orderNum), `iOrder == ${orderNum}`);
@@ -112,16 +112,36 @@ function primeGuards(orderNum, details){
   }
 }
 
-function callViewDemoLabel(orderNum){
-  if (typeof window.viewDemoLabel !== 'function'){
-    const err = new Error('viewDemoLabel() missing');
-    err.code = DemoErr.VIEW_FN_MISSING;
-    throw err;
+function callViewDemoLabel(orderNum, details){
+  let viaMenu = false;
+  if (details) {
+    try {
+      const btn = details.querySelector('.btn-group .dropdown-toggle');
+      if (btn) {
+        btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+        const menuItem = details.querySelector('li[data-demoaction] a[onclick*="viewDemoLabel"], li[data-demoaction] a[href*="viewDemoLabel"]');
+        if (menuItem) {
+          DemoLog.info('Clicking View Demo Label via menu');
+          menuItem.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+          viaMenu = true;
+        }
+      }
+    } catch (e) {
+      DemoLog.warn('Menu click failed:', e);
+    }
   }
-  const _alert = window.alert;
-  window.alert = (m)=>{ DemoLog.warn('[ALERT]', m); try { return _alert(m); } catch {} };
-  DemoLog.info(`Calling viewDemoLabel() for order #${orderNum}`);
-  window.viewDemoLabel();
+
+  if (!viaMenu) {
+    if (typeof window.viewDemoLabel !== 'function'){
+      const err = new Error('viewDemoLabel() missing');
+      err.code = DemoErr.VIEW_FN_MISSING;
+      throw err;
+    }
+    const _alert = window.alert;
+    window.alert = (m)=>{ DemoLog.warn('[ALERT]', m); try { return _alert(m); } catch {} };
+    DemoLog.info(`Calling viewDemoLabel() for order #${orderNum}`);
+    window.viewDemoLabel();
+  }
 }
 
 export async function ensureDemoLabelFlow(){
@@ -135,7 +155,7 @@ export async function ensureDemoLabelFlow(){
 
     const details = await openOrder(orderNum);
     primeGuards(orderNum, details);
-    callViewDemoLabel(orderNum);
+    callViewDemoLabel(orderNum, details);
 
     DemoLog.event('success', { orderNum });
     return { ok: true, orderNum };
