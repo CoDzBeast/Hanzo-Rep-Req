@@ -176,13 +176,35 @@ async function openOrderAndClickLabel(iorder, visibleOrder) {
     safeClick(row, ctx);
   }
   labelLog.debug('opening order row', { iorder: actualIorder, visibleOrder });
-  const panelSel = `#O${actualIorder}`;
-  labelLog.debug('waiting for panel', { selector: panelSel });
-  await waitFor(() => document.querySelector(panelSel), 12000, 200);
 
-  const panel = document.querySelector(panelSel);
-  if (!panel) throw new Error('Order panel not found');
-  labelLog.debug('panel found', { selector: panelSel, innerHTMLLen: (panel.innerHTML || '').length });
+  // Scope all queries to the order details panel and locate the demo label
+  // control. Query the panel fresh each attempt to avoid stale references and
+  // log which selector matched.
+  function probePanel(p){
+    try {
+      const sample = Array.from(p.querySelectorAll('a,button'))
+        .slice(0,3)
+        .map(el => ({ tag: el.tagName, text: (el.textContent||'').trim().slice(0,60) }));
+      labelLog.debug('panel probe', { sample });
+    } catch (e) {
+      labelLog.warn('panel probe failed', String(e));
+    }
+  }
+
+  let panel;
+  try {
+    panel = await waitFor(() => {
+      if (String(window.iOrder) !== String(actualIorder)) return false;
+      const p = document.getElementById('O' + actualIorder);
+      if (!p) return false;
+      if (p.offsetParent === null || getComputedStyle(p).display === 'none') return false;
+      return p;
+    }, 25000, 200);
+  } catch {
+    labelLog.dedup('order panel not found', { iorder: actualIorder }, 'warn');
+    return;
+  }
+  labelLog.debug('panel found', { iorder: actualIorder, innerHTMLLen: (panel.innerHTML || '').length });
 
   // Ensure environment expected by viewDemoLabel()
   try { window.cTrn = 'O'; } catch {}
@@ -203,88 +225,69 @@ async function openOrderAndClickLabel(iorder, visibleOrder) {
     ['iOrder','currentOrder','selOrder','OrderID','orderId','order','order_id'].forEach(n=>ensure(n, actualIorder));
   }
 
-  // Prefer triggering the demo label via the Order Options menu so the page
-  // behaves as if a user clicked it. Fallback to calling label functions
-  // directly if the menu or item cannot be found.
-  let invoked = false;
-  try {
-    const orderBtn = panel.querySelector('.btn-group .dropdown-toggle');
-    let menuItem = null;
-    if (orderBtn) {
-      safeClick(orderBtn, ctx);
-      menuItem = await waitFor(
-        () => panel.querySelector(
-          'li[data-demoaction] a[onclick*="viewDemoLabel"], '
-          + 'li[data-demoaction] a[href*="viewDemoLabel"], '
-          + 'a[onclick*="viewDemoLabel"], a[href*="viewDemoLabel"]'
-        ),
-        10000,
-        200
-      ).catch(() => null);
-    } else {
-      menuItem = panel.querySelector(
-        'li[data-demoaction] a[onclick*="viewDemoLabel"], '
-        + 'li[data-demoaction] a[href*="viewDemoLabel"], '
-        + 'a[onclick*="viewDemoLabel"], a[href*="viewDemoLabel"]'
-      );
-    }
-    if (menuItem) {
-      labelLog.debug('clicking View Demo Label via menu', { iorder: actualIorder });
-      let href = (menuItem.getAttribute('href') || '').trim().toLowerCase();
-      const hasOnClick = menuItem.hasAttribute('onclick');
-      if (href.startsWith('javascript:')) {
-        menuItem.setAttribute('href', '#');
-        href = '#';
-        if (hasOnClick) {
-          const onclick = menuItem.getAttribute('onclick') || '';
-          if (!/return false;?$/i.test(onclick)) {
-            menuItem.setAttribute('onclick', onclick.replace(/;?$/, '; return false;'));
-          }
-        }
-      }
-      safeClick(menuItem, ctx);
-      // If the menu item lacks an onclick handler our safeClick can suppress
-      // the site's built‑in behavior. Manually invoke viewDemoLabel so the
-      // PDF opens reliably in a new tab.
-      if (!hasOnClick && typeof window.viewDemoLabel === 'function') {
-        try {
-          const before = location.href;
-          window.viewDemoLabel();
-          const after = location.href;
-          if (after !== before && after.toLowerCase().includes('shippinglabeldemo.cfm')) {
-            window.open(after, '_blank', 'noopener');
-            try { history.replaceState(null, '', before); } catch {}
-          }
-        } catch (e) {
-          labelLog.error('manual viewDemoLabel failed', String(e));
-        }
-      }
-      invoked = true;
-    }
-  } catch (e) {
-    labelLog.warn('order options click failed', String(e));
+  const btn = panel.querySelector('.btn-group .dropdown-toggle');
+  if (btn) {
+    try { btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window })); }
+    catch (e) { labelLog.warn('dropdown click failed', String(e)); }
   }
 
-  if (!invoked) {
-    const labelFns = [
-      ['View Demo Label', 'viewDemoLabel'],
-      ['View Return Label', 'viewReturnLabel'],
-      ['Email Return Label', 'sendReturnLabel']
-    ];
-    for (const [action, fn] of labelFns) {
-        if (typeof window[fn] === 'function') {
-          labelLog.debug('calling label function', { action, iorder: actualIorder });
-          try { window[fn](); } catch (e) {
-            throw new Error(`${fn}() threw: ${e}`);
-          }
-          invoked = true;
-          break;
-        }
+  const selectors = [
+    '.view-demo-label',
+    'button[data-action="demo-label"]',
+    'a[href*="DemoLabel" i]',
+    'li[data-demoaction] a[onclick*="viewDemoLabel"], li[data-demoaction] a[href*="viewDemoLabel"]'
+  ];
+
+  let ctlInfo;
+  try {
+    ctlInfo = await waitFor(() => {
+      for (const sel of selectors) {
+        const el = panel.querySelector(sel);
+        if (el) return { el, selector: sel };
       }
-      if (!invoked) throw new Error('No label function available');
-    }
-    labelLog.debug('label action invoked', { iorder: actualIorder, invoked });
+      return false;
+    }, 10000, 200);
+  } catch {
+    labelLog.warn('demo label control not found', { iorder: actualIorder });
+    probePanel(panel);
+    return;
   }
+
+  const ctl = ctlInfo.el;
+  labelLog.debug('control found', {
+    iorder: actualIorder,
+    selector: ctlInfo.selector,
+    ctlTag: ctl.tagName,
+    ctlText: (ctl.textContent || '').trim().slice(0,60)
+  });
+
+  try {
+    ctl.dispatchEvent(new MouseEvent('click', { bubbles:true, cancelable:true, view:window }));
+    try { ctl.click(); } catch {}
+    labelLog.debug('clicked control', { iorder: actualIorder });
+  } catch (e) {
+    labelLog.warn('control click failed', { iorder: actualIorder, error: String(e) });
+  }
+
+  let navigated = false;
+  try {
+    await waitFor(() => /DemoLabel\.cfm/i.test(location.href), 1500, 100);
+    navigated = true;
+  } catch {}
+
+  if (!navigated) {
+    const url = `${location.origin}/cgi-bin/DemoLabel.cfm?iOrder=${encodeURIComponent(actualIorder)}&cTrn=O`;
+    labelLog.debug('direct nav to label', { url, iorder: actualIorder });
+    if (window.chrome?.tabs) {
+      chrome.tabs.create({ url, active:false }, tab => labelLog.debug('label tab created', { tabId: tab.id, url }));
+    } else {
+      window.open(url, '_blank');
+    }
+  }
+
+  chrome.runtime.sendMessage({ type: 'EXPECT_PDF', iorder: actualIorder });
+  labelLog.debug('label action invoked', { iorder: actualIorder, navigated });
+}
 
 function waitFor(fn, timeoutMs = 10000, poll = 100) {
   return new Promise((res, rej) => {
