@@ -126,11 +126,31 @@ function callViewDemoLabel(orderNum, details){
         );
         if (menuItem) {
           DemoLog.info('Clicking View Demo Label via menu');
-          menuItem.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-          const href = (menuItem.getAttribute('href') || '').toLowerCase();
+          let href = (menuItem.getAttribute('href') || '').trim().toLowerCase();
           const hasOnClick = menuItem.hasAttribute('onclick');
-          if ((href.startsWith('javascript:') || !hasOnClick) && typeof window.viewDemoLabel === 'function') {
-            try { window.viewDemoLabel(); } catch (e) {
+          if (href === 'javascript:') {
+            menuItem.setAttribute('href', '#');
+            href = '#';
+            if (hasOnClick) {
+              const onclick = menuItem.getAttribute('onclick') || '';
+              if (!/return false;?$/i.test(onclick)) {
+                menuItem.setAttribute('onclick', onclick.replace(/;?$/, '; return false;'));
+              }
+            }
+          }
+          menuItem.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+          // If the menu item lacks an onclick handler, manually invoke
+          // viewDemoLabel and ensure the label opens in a new tab.
+          if (!hasOnClick && typeof window.viewDemoLabel === 'function') {
+            try {
+              const before = location.href;
+              window.viewDemoLabel();
+              const after = location.href;
+              if (after !== before && after.includes('shippingLabelDemo.cfm')) {
+                window.open(after, '_blank', 'noopener');
+                try { history.replaceState(null, '', before); } catch {}
+              }
+            } catch (e) {
               DemoLog.warn('manual viewDemoLabel failed', e);
             }
           }
