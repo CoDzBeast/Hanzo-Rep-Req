@@ -221,10 +221,15 @@ async function openOrderAndClickLabel(iorder, visibleOrder) {
     if (menuItem) {
       labelLog.debug('clicking View Demo Label via menu', { iorder: actualIorder });
       const href = (menuItem.getAttribute('href') || '').toLowerCase();
-      const needsManual = !menuItem.getAttribute('onclick') && href.includes('viewdemolabel');
+      const hasOnClick = menuItem.hasAttribute('onclick');
       safeClick(menuItem, ctx);
-      if (needsManual && typeof window.viewDemoLabel === 'function') {
-        window.viewDemoLabel();
+      // If the menu item relies on a javascript: URL or lacks an onclick
+      // handler, our safeClick can suppress the site's built‑in behavior.
+      // Manually invoke viewDemoLabel so the PDF opens reliably.
+      if ((href.startsWith('javascript:') || !hasOnClick) && typeof window.viewDemoLabel === 'function') {
+        try { window.viewDemoLabel(); } catch (e) {
+          labelLog.error('manual viewDemoLabel failed', String(e));
+        }
       }
       invoked = true;
     }
