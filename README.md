@@ -15,7 +15,7 @@ summarised periodically.
 
 ## Demo Orders QA Checklist
 
-Enable verbose logs by appending `?demodebug=1` to the URL or running in the console:
+Verbose logs are enabled automatically when the extension's logging preset is set to **Focus Label Debug** or **Full Trace**. To force logging on a specific page, append `?demodebug=1` to the URL or run:
 
 ```js
 localStorage.setItem('DemoFixDebug','1');
