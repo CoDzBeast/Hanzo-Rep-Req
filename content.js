@@ -207,11 +207,17 @@ async function openOrderAndClickLabel(iorder, visibleOrder) {
   let invoked = false;
   try {
     const orderBtn = panel.querySelector('.btn-group .dropdown-toggle');
+    let menuItem = null;
     if (orderBtn) {
       safeClick(orderBtn, ctx);
-      await new Promise(r => setTimeout(r, 50));
+      menuItem = await waitFor(
+        () => panel.querySelector('li[data-demoaction] a[onclick*="viewDemoLabel"]'),
+        10000,
+        200
+      ).catch(() => null);
+    } else {
+      menuItem = panel.querySelector('li[data-demoaction] a[onclick*="viewDemoLabel"]');
     }
-    const menuItem = panel.querySelector('li[data-demoaction] a[onclick*="viewDemoLabel"]');
     if (menuItem) {
       labelLog.debug('clicking View Demo Label via menu', { iorder: actualIorder });
       safeClick(menuItem, ctx);
