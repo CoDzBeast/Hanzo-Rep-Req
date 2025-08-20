@@ -202,6 +202,17 @@ chrome.webNavigation.onCreatedNavigationTarget.addListener(({tabId, sourceTabId,
   }
 });
 
+// Capture same-tab navigations to PDFs that may not trigger tabs.onUpdated
+chrome.webNavigation.onCommitted.addListener(({tabId, frameId, url}) => {
+  if (frameId !== 0) return; // ignore subframes
+  handlePdfCandidate(tabId, url, 'webNav.onCommitted');
+});
+
+chrome.webNavigation.onCompleted.addListener(({tabId, frameId, url}) => {
+  if (frameId !== 0) return; // ignore subframes
+  handlePdfCandidate(tabId, url, 'webNav.onCompleted');
+});
+
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   const info = expecting.get(tabId);
   if (!info) return;
