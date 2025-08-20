@@ -230,7 +230,7 @@ async function openOrderAndClickLabel(iorder, visibleOrder) {
       labelLog.debug('clicking View Demo Label via menu', { iorder: actualIorder });
       let href = (menuItem.getAttribute('href') || '').trim().toLowerCase();
       const hasOnClick = menuItem.hasAttribute('onclick');
-      if (href === 'javascript:') {
+      if (href.startsWith('javascript:')) {
         menuItem.setAttribute('href', '#');
         href = '#';
         if (hasOnClick) {
@@ -249,7 +249,7 @@ async function openOrderAndClickLabel(iorder, visibleOrder) {
           const before = location.href;
           window.viewDemoLabel();
           const after = location.href;
-          if (after !== before && after.includes('shippingLabelDemo.cfm')) {
+          if (after !== before && after.toLowerCase().includes('shippinglabeldemo.cfm')) {
             window.open(after, '_blank', 'noopener');
             try { history.replaceState(null, '', before); } catch {}
           }
