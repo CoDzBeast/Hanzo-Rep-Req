@@ -211,12 +211,20 @@ async function openOrderAndClickLabel(iorder, visibleOrder) {
     if (orderBtn) {
       safeClick(orderBtn, ctx);
       menuItem = await waitFor(
-        () => panel.querySelector('li[data-demoaction] a[onclick*="viewDemoLabel"], li[data-demoaction] a[href*="viewDemoLabel"]'),
+        () => panel.querySelector(
+          'li[data-demoaction] a[onclick*="viewDemoLabel"], '
+          + 'li[data-demoaction] a[href*="viewDemoLabel"], '
+          + 'a[onclick*="viewDemoLabel"], a[href*="viewDemoLabel"]'
+        ),
         10000,
         200
       ).catch(() => null);
     } else {
-      menuItem = panel.querySelector('li[data-demoaction] a[onclick*="viewDemoLabel"], li[data-demoaction] a[href*="viewDemoLabel"]');
+      menuItem = panel.querySelector(
+        'li[data-demoaction] a[onclick*="viewDemoLabel"], '
+        + 'li[data-demoaction] a[href*="viewDemoLabel"], '
+        + 'a[onclick*="viewDemoLabel"], a[href*="viewDemoLabel"]'
+      );
     }
     if (menuItem) {
       labelLog.debug('clicking View Demo Label via menu', { iorder: actualIorder });
