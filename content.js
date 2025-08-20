@@ -211,16 +211,21 @@ async function openOrderAndClickLabel(iorder, visibleOrder) {
     if (orderBtn) {
       safeClick(orderBtn, ctx);
       menuItem = await waitFor(
-        () => panel.querySelector('li[data-demoaction] a[onclick*="viewDemoLabel"]'),
+        () => panel.querySelector('li[data-demoaction] a[onclick*="viewDemoLabel"], li[data-demoaction] a[href*="viewDemoLabel"]'),
         10000,
         200
       ).catch(() => null);
     } else {
-      menuItem = panel.querySelector('li[data-demoaction] a[onclick*="viewDemoLabel"]');
+      menuItem = panel.querySelector('li[data-demoaction] a[onclick*="viewDemoLabel"], li[data-demoaction] a[href*="viewDemoLabel"]');
     }
     if (menuItem) {
       labelLog.debug('clicking View Demo Label via menu', { iorder: actualIorder });
+      const href = (menuItem.getAttribute('href') || '').toLowerCase();
+      const needsManual = !menuItem.getAttribute('onclick') && href.includes('viewdemolabel');
       safeClick(menuItem, ctx);
+      if (needsManual && typeof window.viewDemoLabel === 'function') {
+        window.viewDemoLabel();
+      }
       invoked = true;
     }
   } catch (e) {
