@@ -473,8 +473,8 @@ async function processJob(job){
     labelLog.debug('guards set', { iorder: map.iorder, cTrn: result.cTrn, iOrder: result.iOrder });
   }).catch(() => {});
 
-  // 4) Open label directly and capture PDF URL
-  const pdfUrl = await openLabelAndCapturePdf(map.iorder);
+  // 4) Open label via viewDemoLabel and capture PDF URL
+  const pdfUrl = await openLabelAndCapturePdf(map.iorder, tabId);
   if (!pdfUrl) {
     try { await chrome.tabs.remove(tabId); } catch {}
     throw new Error('No PDF URL captured (label open produced no PDF)');
@@ -501,25 +501,51 @@ function waitComplete(tabId){
   });
 }
 
-async function openLabelAndCapturePdf(iorder){
-  const url = `${ORIGIN}/cgi-bin/DemoLabel.cfm?iOrder=${encodeURIComponent(iorder)}&cTrn=O`;
-  labelLog.debug('opening label url', { iorder, url });
-  const { id: tabId } = await chrome.tabs.create({ url, active: false });
-  labelLog.debug('label tab created', { tabId, url });
-  return await new Promise(resolve => {
-    const info = { until: Date.now() + 20000, iorder, navigation: true, tabIds: new Set([tabId]) };
+async function openLabelAndCapturePdf(iorder, tabId){
+  labelLog.debug('invoking viewDemoLabel', { iorder, tabId });
+
+  const pdfPromise = new Promise(resolve => {
+    const info = { until: Date.now() + 20000, iorder, navigation: false, tabIds: new Set([tabId]) };
     const timer = setTimeout(() => {
       for (const id of info.tabIds) expecting.delete(id);
       resolve(null);
     }, 20000);
     info.resolve = (res) => {
       clearTimeout(timer);
-      for (const id of info.tabIds) expecting.delete(id);
+      for (const id of info.tabIds) {
+        expecting.delete(id);
+        if (id !== tabId) { try { chrome.tabs.remove(id); } catch {} }
+      }
       resolve(res.url || null);
     };
     expecting.set(tabId, info);
-    labelLog.debug('EXPECT_PDF after navigation', { iorder, tabId });
+    labelLog.debug('EXPECT_PDF before viewDemoLabel', { iorder, tabId });
   });
+
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId }, world: 'MAIN',
+      func: () => {
+        try {
+          const before = location.href;
+          if (typeof window.viewDemoLabel === 'function') {
+            window.viewDemoLabel();
+            const after = location.href;
+            if (after !== before && /shippingLabelDemo\.cfm/i.test(after)) {
+              window.open(after, '_blank', 'noopener');
+              try { history.replaceState(null, '', before); } catch {}
+            }
+          }
+        } catch (e) {
+          console.warn('viewDemoLabel error', e);
+        }
+      }
+    });
+  } catch (e) {
+    labelLog.warn('viewDemoLabel executeScript failed', { iorder, error: String(e) });
+  }
+
+  return await pdfPromise;
 }
 
 // ---------- Print All: fetch, merge, print once ----------
