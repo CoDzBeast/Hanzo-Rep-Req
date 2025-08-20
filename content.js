@@ -47,9 +47,14 @@ function safeClick(el, {demoBox, ordersBox}) {
   }
   const href = typeof el.getAttribute === 'function' ? (el.getAttribute('href') || '') : '';
   if (el.tagName === 'A' && href.trim().toLowerCase().startsWith('javascript:')) {
-    el.addEventListener('click', e => e.preventDefault(), { once: true, capture: true });
+    // Prevent CSP violations from javascript: URLs by cancelling the default
+    // navigation and any inline handlers before the browser evaluates them.
+    el.addEventListener('click', e => {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    }, { once: true, capture: true });
   }
-  el.dispatchEvent(new MouseEvent('click', {bubbles:true, cancelable:true, view:window}));
+  el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
 }
 
 
