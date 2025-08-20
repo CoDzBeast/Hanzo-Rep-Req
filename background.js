@@ -122,6 +122,10 @@ const LOCK_KEY   = 'hh_jobs_lock_v1';
 const MAX_TRIES = 3;
 const HEARTBEAT_MIN = 0.25; // 15s
 
+// Queue processing is disabled until the user queues a job via "Ship It!".
+// This prevents any stored jobs from auto-running when the extension starts.
+let processingEnabled = false;
+
 // Sanity check: pdf-lib availability
 if (!self.PDFLib || !PDFLib.PDFDocument) {
   log.error('pdf-lib not loaded. Ensure pdf-lib.min.js is present and importScripts succeeded.');
@@ -153,6 +157,7 @@ async function enqueueJob(job){
   await set(JOBS_KEY, jobs);
   // Kick the processor without awaiting so we can respond to the sender
   // immediately. Any errors are logged.
+  processingEnabled = true;
   runProcessor().catch(e => log.error('runProcessor enqueue error', String(e)));
 }
 
@@ -275,19 +280,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 });
 
 chrome.runtime.onStartup.addListener(() => {
-  queueLog.trace('onStartup kick');
-  runProcessor().catch(e => log.error('runProcessor onStartup error', String(e)));
+  // Startup no longer triggers processing; queued jobs remain idle until a
+  // user action enqueues a job.
+  queueLog.trace('onStartup');
 });
 chrome.runtime.onInstalled.addListener(() => {
   setupMenus();
   applyPreset({ logLevel:'warn', enableNamespaces:[], sampling:{}, rateLimit:{ windowMs:2000, maxPerWindow:20 } });
-  queueLog.trace('onInstalled kick');
-  runProcessor().catch(e => log.error('runProcessor onInstalled error', String(e)));
+  queueLog.trace('onInstalled');
 });
 
 chrome.alarms.create('hh_job_heartbeat', { periodInMinutes: HEARTBEAT_MIN });
 chrome.alarms.onAlarm.addListener(a => {
-  if (a.name === 'hh_job_heartbeat') {
+  if (a.name === 'hh_job_heartbeat' && processingEnabled) {
     queueLog.trace('heartbeat');
     runProcessor().catch(e => log.error('runProcessor heartbeat error', String(e)));
   }
