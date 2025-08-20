@@ -201,23 +201,44 @@ async function openOrderAndClickLabel(iorder, visibleOrder) {
     ['iOrder','currentOrder','selOrder','OrderID','orderId','order','order_id'].forEach(n=>ensure(n, actualIorder));
   }
 
-  const labelFns = [
-    ['View Demo Label', 'viewDemoLabel'],
-    ['View Return Label', 'viewReturnLabel'],
-    ['Email Return Label', 'sendReturnLabel']
-  ];
+  // Prefer triggering the demo label via the Order Options menu so the page
+  // behaves as if a user clicked it. Fallback to calling label functions
+  // directly if the menu or item cannot be found.
   let invoked = false;
-  for (const [action, fn] of labelFns) {
-    if (typeof window[fn] === 'function') {
-      labelLog.debug('calling label function', { action, iorder: actualIorder });
-      try { window[fn](); } catch (e) {
-        throw new Error(`${fn}() threw: ${e}`);
-      }
-      invoked = true;
-      break;
+  try {
+    const orderBtn = panel.querySelector('.btn-group .dropdown-toggle');
+    if (orderBtn) {
+      safeClick(orderBtn, ctx);
+      await new Promise(r => setTimeout(r, 50));
     }
+    const menuItem = panel.querySelector('li[data-demoaction] a[onclick*="viewDemoLabel"]');
+    if (menuItem) {
+      labelLog.debug('clicking View Demo Label via menu', { iorder: actualIorder });
+      safeClick(menuItem, ctx);
+      invoked = true;
+    }
+  } catch (e) {
+    labelLog.warn('order options click failed', String(e));
   }
-  if (!invoked) throw new Error('No label function available');
+
+  if (!invoked) {
+    const labelFns = [
+      ['View Demo Label', 'viewDemoLabel'],
+      ['View Return Label', 'viewReturnLabel'],
+      ['Email Return Label', 'sendReturnLabel']
+    ];
+    for (const [action, fn] of labelFns) {
+      if (typeof window[fn] === 'function') {
+        labelLog.debug('calling label function', { action, iorder: actualIorder });
+        try { window[fn](); } catch (e) {
+          throw new Error(`${fn}() threw: ${e}`);
+        }
+        invoked = true;
+        break;
+      }
+    }
+    if (!invoked) throw new Error('No label function available');
+  }
 
   chrome.runtime.sendMessage({ type: 'EXPECT_PDF', iorder: actualIorder });
 }
