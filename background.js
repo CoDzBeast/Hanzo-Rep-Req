@@ -1,7 +1,7 @@
 /* background.js */
 /* global PDFLib */
 
-importScripts('logger.js');
+importScripts(chrome.runtime.getURL('logger.js'));
 const log = createLogger('HH:bg');
 const queueLog = createLogger('HH:queue');
 const labelLog = createLogger('HH:label');
