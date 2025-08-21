@@ -465,7 +465,24 @@ async function processJob(job){
     target: { tabId }, world: 'MAIN',
     func: (iorder) => {
       try { window.cTrn = 'O'; } catch {}
+      const cTr = document.querySelector('#cTr');
+      if (cTr) cTr.innerHTML = 'O';
       try { window.iOrder = iorder; } catch {}
+      const form = document.querySelector(`#O${iorder} form`);
+      if (form) {
+        const ensure = (n, v) => {
+          let el = form.querySelector(`input[name="${n}"]`) || form.querySelector('#' + CSS.escape(n));
+          if (!el) {
+            el = document.createElement('input');
+            el.type = 'hidden';
+            el.name = n;
+            el.id = n;
+            form.appendChild(el);
+          }
+          el.value = String(v);
+        };
+        ['iOrder', 'currentOrder', 'selOrder', 'OrderID', 'orderId', 'order', 'order_id'].forEach(n => ensure(n, iorder));
+      }
       return { cTrn: window.cTrn || null, iOrder: window.iOrder || null };
     },
     args: [map.iorder]
@@ -525,21 +542,52 @@ async function openLabelAndCapturePdf(iorder, tabId){
   try {
     await chrome.scripting.executeScript({
       target: { tabId }, world: 'MAIN',
-      func: () => {
+      func: (iorder) => {
         try {
-          const before = location.href;
-          if (typeof window.viewDemoLabel === 'function') {
-            window.viewDemoLabel();
-            const after = location.href;
-            if (after !== before && /shippingLabelDemo\.cfm/i.test(after)) {
-              window.open(after, '_blank', 'noopener');
-              try { history.replaceState(null, '', before); } catch {}
+          const row = document.querySelector(`.rwOrdr[onclick*="GetOrder(${iorder}"]`) ||
+            [...document.querySelectorAll('.rwOrdr')].find(el => (el.textContent || '').includes('#' + iorder));
+          row?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+
+          const panel = document.getElementById('O' + iorder);
+          const btn = panel?.querySelector('.btn-group .dropdown-toggle');
+          btn?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+
+          const menuItem = panel?.querySelector(
+            'li[data-demoaction] a[onclick*="viewDemoLabel"], '
+            + 'li[data-demoaction] a[href*="viewDemoLabel"], '
+            + 'a[onclick*="viewDemoLabel"], a[href*="viewDemoLabel"]'
+          );
+          if (menuItem) {
+            let href = (menuItem.getAttribute('href') || '').trim().toLowerCase();
+            const hasOnClick = menuItem.hasAttribute('onclick');
+            if (href.startsWith('javascript:')) {
+              menuItem.setAttribute('href', '#');
+              href = '#';
+              if (hasOnClick) {
+                const onclick = menuItem.getAttribute('onclick') || '';
+                if (!/return false;?$/i.test(onclick)) {
+                  menuItem.setAttribute('onclick', onclick.replace(/;?$/, '; return false;'));
+                }
+              }
             }
+            menuItem.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+            if (!hasOnClick && typeof window.viewDemoLabel === 'function') {
+              const before = location.href;
+              window.viewDemoLabel();
+              const after = location.href;
+              if (after !== before && /shippingLabelDemo\.cfm/i.test(after)) {
+                window.open(after, '_blank', 'noopener');
+                try { history.replaceState(null, '', before); } catch {}
+              }
+            }
+          } else if (typeof window.viewDemoLabel === 'function') {
+            window.viewDemoLabel();
           }
         } catch (e) {
           console.warn('viewDemoLabel error', e);
         }
-      }
+      },
+      args: [iorder]
     });
   } catch (e) {
     labelLog.warn('viewDemoLabel executeScript failed', { iorder, error: String(e) });
