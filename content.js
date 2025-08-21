@@ -17,13 +17,10 @@ const SEL = {
   orderPanelByNumber: (n) => `#O${n}`,
 };
 
-// DO NOT USE: element.click() — always use safeClick
+// Preserve the native click method so extension code can invoke it safely
+// without modifying global element behavior. Avoid calling `element.click()`
+// directly elsewhere; use safeClick() with proper safeguards instead.
 const _click = HTMLElement.prototype.click;
-Object.defineProperty(HTMLElement.prototype, 'click', {
-  value: function() {
-    throw new Error('Direct element.click() is disabled; use safeClick() inside Orders only.');
-  }
-});
 
 function findDemoBox(){
   return Array.from(document.querySelectorAll('h4'))
@@ -54,7 +51,7 @@ function safeClick(el, {demoBox, ordersBox}) {
       e.stopImmediatePropagation();
     }, { once: true, capture: true });
   }
-  el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+  _click.call(el);
 }
 
 
