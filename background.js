@@ -206,6 +206,12 @@ function handlePdfCandidate(tabId, url, origin = ''){
   if (info) info.navigation = true;
   if (!url) return;
   if (looksLikePdf(url)) {
+    // Some endpoints first open a placeholder URL like
+    // `shippingLabelDemo.cfm?batchNum=` and then redirect to
+    // the final URL containing the generated batch number.
+    // Skip resolving in this case so that later navigation events
+    // can capture the final URL with the batch number included.
+    if (/[?&]batchnum=$/i.test(url)) return;
     labelLog.debug(`PDF captured via: ${origin}`, { tabId, iorder: info?.iorder || null, url });
     resolvePdfForTab(tabId, url);
   }
@@ -241,13 +247,7 @@ chrome.webNavigation.onCompleted.addListener(({tabId, frameId, url}) => {
 });
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
-  const info = expecting.get(tabId);
-  if (!info) return;
-  if (changeInfo.url) info.navigation = true;
-  if (changeInfo.url && looksLikePdf(changeInfo.url)) {
-    labelLog.debug('PDF captured via: tabs.onUpdated', { url: changeInfo.url, iorder: info?.iorder || null });
-    resolvePdfForTab(tabId, changeInfo.url);
-  }
+  if (changeInfo.url) handlePdfCandidate(tabId, changeInfo.url, 'tabs.onUpdated');
 });
 
 function resolvePdfForTab(tabId, url){
