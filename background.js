@@ -142,6 +142,27 @@ async function set(key, val){
   }
 }
 
+// ---------- PDF data helpers ----------
+function arrayBufferToBase64(buffer){
+  let binary = '';
+  const bytes = new Uint8Array(buffer);
+  const len = bytes.byteLength;
+  for (let i = 0; i < len; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+function base64ToArrayBuffer(base64){
+  const binary = atob(base64);
+  const len = binary.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes.buffer;
+}
+
 // ---------- Job enqueue / labels ----------
 function createJobManager(config, bus){
   async function enqueueJob(job){
@@ -498,8 +519,21 @@ async function processJob(job){
   }
   labelLog.debug('pdf url captured', { iorder: map.iorder, url: pdfUrl });
 
-  // 4) Save to labels queue
-  await pushLabel({ demoOrder: map.iorder, orderNumber: job.visibleOrder || null, url: pdfUrl });
+  // 4) Fetch PDF content and save to labels queue
+  let pdfData = null;
+  try {
+    const res = await fetch(pdfUrl, { credentials: 'include' });
+    if (res.ok) {
+      const buf = await res.arrayBuffer();
+      pdfData = arrayBufferToBase64(buf);
+    } else {
+      labelLog.warn('pdf fetch failed', { iorder: map.iorder, status: res.status });
+    }
+  } catch (e) {
+    labelLog.warn('pdf fetch error', { iorder: map.iorder, error: String(e) });
+  }
+
+  await pushLabel({ demoOrder: map.iorder, orderNumber: job.visibleOrder || null, url: pdfUrl, data: pdfData });
 
   try { await chrome.tabs.remove(tabId); } catch {}
   queueLog.trace('account tab closed', { tabId });
@@ -610,12 +644,16 @@ async function printAllMerged(){
   const failures = [];
   for (const item of queue) {
     try {
-      const res = await fetch(item.url, { credentials: 'include' });
-      if (!res.ok) {
-        failures.push({ demoOrder: item.demoOrder, status: res.status });
-        continue;
+      if (item.data) {
+        pdfBuffers.push(base64ToArrayBuffer(item.data));
+      } else {
+        const res = await fetch(item.url, { credentials: 'include' });
+        if (!res.ok) {
+          failures.push({ demoOrder: item.demoOrder, status: res.status });
+          continue;
+        }
+        pdfBuffers.push(await res.arrayBuffer());
       }
-      pdfBuffers.push(await res.arrayBuffer());
     } catch (e) {
       failures.push({ demoOrder: item.demoOrder, err: String(e) });
     }
