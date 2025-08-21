@@ -645,6 +645,17 @@ async function printAllMerged(){
     const { id: tabId } = await chrome.tabs.create({ url: 'about:blank', active: false });
     log.info('printAll: temp tab created', { tabId });
 
+    // Wait for the blank tab to finish loading before injecting the print script.
+    await new Promise(resolve => {
+      const listener = (id, info) => {
+        if (id === tabId && info.status === 'complete') {
+          chrome.tabs.onUpdated.removeListener(listener);
+          resolve();
+        }
+      };
+      chrome.tabs.onUpdated.addListener(listener);
+    });
+
     await chrome.scripting.executeScript({
       target: { tabId }, world: 'MAIN',
       func: (url) => {
