@@ -218,6 +218,12 @@ chrome.webNavigation.onCreatedNavigationTarget.addListener(({tabId, sourceTabId,
   expecting.set(tabId, info);
   info.tabIds.add(tabId);
   if (looksLikePdf(url)) {
+    // Some endpoints first open a placeholder URL like
+    // `shippingLabelDemo.cfm?batchNum=` and then redirect to
+    // the final URL containing the generated batch number.
+    // Skip resolving in this case so that later navigation events
+    // can capture the final URL with the batch number included.
+    if (/[?&]batchnum=$/i.test(url)) return;
     labelLog.debug('PDF captured via: onCreatedNavigationTarget', { url, iorder: info?.iorder || null });
     resolvePdfForTab(sourceTabId, url);
   }
