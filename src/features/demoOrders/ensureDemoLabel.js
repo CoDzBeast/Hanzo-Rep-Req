@@ -198,3 +198,20 @@ export async function ensureDemoLabelFlow(){
     DemoLog.timeEnd('ensureDemoLabelFlow');
   }
 }
+
+export async function viewDemoLabelForOrder(orderNum){
+  DemoLog.time('viewDemoLabelForOrder');
+  try {
+    const details = await openOrder(orderNum);
+    primeGuards(orderNum, details);
+    callViewDemoLabel(orderNum, details);
+    DemoLog.event('success', { orderNum });
+    return { ok: true, orderNum };
+  } catch (err) {
+    DemoLog.error('viewDemoLabelForOrder failed:', err.code || 'E_UNKNOWN', err.message);
+    DemoLog.event('failure', { code: err.code || 'E_UNKNOWN', message: err.message, stack: err.stack });
+    return { ok: false, error: { code: err.code || 'E_UNKNOWN', message: err.message } };
+  } finally {
+    DemoLog.timeEnd('viewDemoLabelForOrder');
+  }
+}
